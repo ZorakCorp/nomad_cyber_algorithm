@@ -1,6 +1,8 @@
 import * as http from 'http';
 import { NomadConfig } from '../config';
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { ConsoleAuthService } from './console_auth';
+import type { ZkProof } from './zk_auth';
 import { applySecurityHeaders } from '../gateway/security_headers';
 import { StructuredLogger } from '../ops/logger';
 import { AuditLog } from '../ops/audit_log';
@@ -49,7 +51,7 @@ export class ConsoleServer {
 
         if (method === 'POST' && path === '/console/login') {
             const body = await this.readJson(req);
-            const result = this.auth.login(String(body.username ?? ''), String(body.password ?? ''));
+            const result = await this.auth.login(String(body.username ?? ''), String(body.password ?? ''));
             if (!result) {
                 res.writeHead(401, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'INVALID_CREDENTIALS' }));
@@ -63,6 +65,52 @@ export class ConsoleServer {
         if (method === 'POST' && path === '/console/mfa') {
             const body = await this.readJson(req);
             const ok = this.auth.verifyMfa(String(body.sessionToken ?? ''), String(body.code ?? ''));
+            res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ verified: ok }));
+            return;
+        }
+
+        if (method === 'POST' && path === '/console/webauthn/begin') {
+            const body = await this.readJson(req);
+            const result = await this.auth.beginWebAuthn(String(body.username ?? ''));
+            if (!result) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'USER_NOT_FOUND' }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+            return;
+        }
+
+        if (method === 'POST' && path === '/console/webauthn/verify') {
+            const body = await this.readJson(req);
+            const ok = await this.auth.verifyWebAuthn(
+                String(body.sessionToken ?? ''),
+                String(body.sessionId ?? ''),
+                body.response as AuthenticationResponseJSON
+            );
+            res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ verified: ok }));
+            return;
+        }
+
+        if (method === 'POST' && path === '/console/zk/challenge') {
+            const body = await this.readJson(req);
+            const challenge = this.auth.issueZkChallenge(String(body.username ?? ''));
+            if (!challenge) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'ZK_NOT_APPLICABLE' }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(challenge));
+            return;
+        }
+
+        if (method === 'POST' && path === '/console/zk/verify') {
+            const body = await this.readJson(req);
+            const ok = this.auth.verifyZkProof(String(body.sessionToken ?? ''), body.proof as ZkProof);
             res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ verified: ok }));
             return;

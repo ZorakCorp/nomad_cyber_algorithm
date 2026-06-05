@@ -1,8 +1,11 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import * as argon2 from 'argon2';
 import { NomadConfig } from '../config';
 import { AuditLog } from '../ops/audit_log';
 import { Principal } from '../gateway/rbac';
 import { StructuredLogger } from '../ops/logger';
+import { WebAuthnAuthService } from './webauthn_auth';
+import { ZkAuthService } from './zk_auth';
 
 export interface ConsoleUser {
     username: string;
@@ -10,6 +13,8 @@ export interface ConsoleUser {
     passwordSalt: string;
     totpSecret: string;
     roles: Array<'viewer' | 'operator' | 'admin' | 'sovereign'>;
+    webauthnCredentialId?: string;
+    webauthnPublicKey?: Uint8Array;
 }
 
 export interface ConsoleSession {
@@ -17,18 +22,35 @@ export interface ConsoleSession {
     username: string;
     roles: ConsoleUser['roles'];
     mfaVerified: boolean;
+    webauthnVerified: boolean;
+    zkVerified: boolean;
     expiresAt: number;
 }
+
+const ARGON2_OPTIONS: argon2.Options & { raw?: false } = {
+    type: argon2.argon2id,
+    memoryCost: 65536,
+    timeCost: 3,
+    parallelism: 4,
+};
 
 const FORBIDDEN_PASSWORD_SUBSTRINGS = [
     'change', 'password', 'admin', 'default', 'secret', 'nomad',
 ];
 
 const DUMMY_SALT = Buffer.from('6e6f6d61642d64756d6d792d73616c742d3031', 'hex');
-const DUMMY_HASH = scryptSync('invalid-login-path', DUMMY_SALT, 32).toString('hex');
+const DUMMY_HASH = '$argon2id$v=19$m=65536,t=3,p=4$dummy$invalidhashvalue000000000000000000';
 
-function hashPassword(password: string, salt: Buffer): string {
-    return scryptSync(password, salt, 32).toString('hex');
+async function hashPassword(password: string, salt: Buffer): Promise<string> {
+    return argon2.hash(password, { ...ARGON2_OPTIONS, salt });
+}
+
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+    try {
+        return await argon2.verify(hash, password);
+    } catch {
+        return false;
+    }
 }
 
 function counterToBuffer(counter: number): Buffer {
@@ -37,7 +59,7 @@ function counterToBuffer(counter: number): Buffer {
     return buf;
 }
 
-/** RFC 6238 TOTP with 8-byte big-endian counter. */
+/** RFC 6238 TOTP — dev fallback only; production requires WebAuthn (NIST AAL3). */
 export function generateTotp(secret: string, timestampMs = Date.now()): string {
     const counter = Math.floor(timestampMs / 30_000);
     const hmac = createHmac('sha1', Buffer.from(secret, 'utf8'))
@@ -70,34 +92,38 @@ function containsForbiddenSubstring(value: string): string | null {
     return null;
 }
 
-/**
- * Validates console credentials before any server binds a port.
- * Never bypassed by devMode.
- */
-export function validateStartupSecretsOrThrow(): { password: string; totp: string } {
+export function validateStartupSecretsOrThrow(devMode = process.env.NOMAD_DEV_MODE === 'true'): { password: string; totp: string } {
     const password = process.env.NOMAD_CONSOLE_ADMIN_PASSWORD?.trim();
     const totp = process.env.NOMAD_CONSOLE_ADMIN_TOTP?.trim();
+    const webauthnRequired = process.env.NOMAD_WEBAUTHN_REQUIRED !== 'false' && !devMode;
 
     if (!password) {
         throw new Error('NOMAD_CONSOLE_ADMIN_PASSWORD is required. No default credentials are permitted.');
     }
-    if (!totp) {
-        throw new Error('NOMAD_CONSOLE_ADMIN_TOTP is required. No default TOTP secret is permitted.');
+    if (!webauthnRequired && !totp) {
+        throw new Error('NOMAD_CONSOLE_ADMIN_TOTP is required when WebAuthn is not enforced.');
     }
     if (password.length < 20) {
         throw new Error(`NOMAD_CONSOLE_ADMIN_PASSWORD must be at least 20 characters (got ${password.length}).`);
     }
-    if (totp.length < 16) {
+    if (totp && totp.length < 16) {
         throw new Error(`NOMAD_CONSOLE_ADMIN_TOTP must be at least 16 characters (got ${totp.length}).`);
     }
     const forbidden = containsForbiddenSubstring(password);
     if (forbidden) {
         throw new Error(`NOMAD_CONSOLE_ADMIN_PASSWORD contains forbidden substring "${forbidden}".`);
     }
-    return { password, totp };
+    if (devMode && totp) {
+        console.warn(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            message: 'TOTP MFA active in dev mode — production requires FIDO2/WebAuthn (NIST AAL3).',
+            component: 'console_auth',
+        }));
+    }
+    return { password, totp: totp ?? '' };
 }
 
-/** Fatal startup guard — logs audit event and exits process on failure. */
 export function validateStartupSecrets(audit?: AuditLog, logger?: StructuredLogger): { password: string; totp: string } {
     try {
         return validateStartupSecretsOrThrow();
@@ -118,30 +144,58 @@ export class ConsoleAuthService {
     private users = new Map<string, ConsoleUser>();
     private sessions = new Map<string, ConsoleSession>();
     private mfaAttempts = new Map<string, { count: number; resetAt: number }>();
+    readonly webauthn: WebAuthnAuthService;
+    readonly zk: ZkAuthService;
 
-    constructor(
+    private constructor(
         private config: NomadConfig,
         private audit: AuditLog
     ) {
-        const { password, totp } = validateStartupSecrets(audit);
+        this.webauthn = new WebAuthnAuthService(audit);
+        this.zk = new ZkAuthService(audit);
+    }
+
+    static async create(config: NomadConfig, audit: AuditLog): Promise<ConsoleAuthService> {
+        const svc = new ConsoleAuthService(config, audit);
+        await svc.initializeAdmin();
+        return svc;
+    }
+
+    private async initializeAdmin(): Promise<void> {
+        const { password, totp } = validateStartupSecrets(this.audit);
         const adminSalt = randomBytes(32);
+        const passwordHash = await hashPassword(password, adminSalt);
         this.users.set('admin', {
             username: 'admin',
             passwordSalt: adminSalt.toString('hex'),
-            passwordHash: hashPassword(password, adminSalt),
+            passwordHash,
             totpSecret: totp,
             roles: ['sovereign'],
         });
+
+        const credId = process.env.NOMAD_WEBAUTHN_CREDENTIAL_ID?.trim();
+        const credPub = process.env.NOMAD_WEBAUTHN_PUBLIC_KEY?.trim();
+        if (credId && credPub) {
+            const publicKey = Buffer.from(credPub, 'base64url');
+            this.webauthn.registerCredential('admin', credId, publicKey);
+        } else if (this.config.webauthnRequired) {
+            console.warn(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'warn',
+                message: 'NOMAD_WEBAUTHN_CREDENTIAL_ID/PUBLIC_KEY not set — register hardware key before production login.',
+                component: 'console_auth',
+            }));
+        }
+
+        const zkPub = process.env.NOMAD_ZK_SOVEREIGN_PUBLIC_KEY?.trim();
+        if (zkPub) {
+            this.zk.setSovereignPublicKey(Buffer.from(zkPub, 'hex'));
+        }
     }
 
-    login(username: string, password: string): { sessionToken: string; mfaRequired: boolean } | null {
+    async login(username: string, password: string): Promise<{ sessionToken: string; mfaRequired: boolean } | null> {
         const user = this.users.get(username);
-        const salt = user ? Buffer.from(user.passwordSalt, 'hex') : DUMMY_SALT;
-        const hash = hashPassword(password, salt);
-        const expected = user?.passwordHash ?? DUMMY_HASH;
-        const a = Buffer.from(hash, 'hex');
-        const b = Buffer.from(expected, 'hex');
-        const valid = a.length === b.length && timingSafeEqual(a, b);
+        const valid = user ? await verifyPassword(password, user.passwordHash) : await verifyPassword(password, DUMMY_HASH);
         if (!user || !valid) {
             this.audit.record('handshake_failed', { detail: 'console login failed' });
             return null;
@@ -152,6 +206,8 @@ export class ConsoleAuthService {
             username,
             roles: user.roles,
             mfaVerified: !this.config.consoleMfaRequired,
+            webauthnVerified: !this.config.webauthnRequired,
+            zkVerified: user.roles.includes('sovereign') ? false : true,
             expiresAt: Date.now() + this.config.consoleSessionTtlMs,
         };
         this.sessions.set(token, session);
@@ -160,6 +216,10 @@ export class ConsoleAuthService {
     }
 
     verifyMfa(sessionToken: string, code: string): boolean {
+        if (this.config.webauthnRequired) {
+            this.audit.record('handshake_failed', { detail: 'TOTP rejected — WebAuthn required in production' });
+            return false;
+        }
         const session = this.sessions.get(sessionToken);
         if (!session) return false;
 
@@ -183,8 +243,39 @@ export class ConsoleAuthService {
         }
         session.mfaVerified = true;
         this.mfaAttempts.delete(sessionToken);
-        this.audit.record('handshake_succeeded', { detail: `console MFA ok: ${session.username}` });
+        this.audit.record('handshake_succeeded', { detail: `console TOTP MFA ok: ${session.username}` });
         return true;
+    }
+
+    async beginWebAuthn(username: string): Promise<{ options: unknown; sessionId: string } | null> {
+        const user = this.users.get(username);
+        if (!user) return null;
+        return this.webauthn.beginAuthentication(username);
+    }
+
+    async verifyWebAuthn(sessionToken: string, sessionId: string, response: Parameters<typeof import('@simplewebauthn/server').verifyAuthenticationResponse>[0]['response']): Promise<boolean> {
+        const session = this.sessions.get(sessionToken);
+        if (!session) return false;
+        const ok = await this.webauthn.verifyAuthentication(session.username, sessionId, response);
+        if (ok) {
+            session.webauthnVerified = true;
+            session.mfaVerified = true;
+        }
+        return ok;
+    }
+
+    issueZkChallenge(username: string): ReturnType<ZkAuthService['issueChallenge']> | null {
+        const user = this.users.get(username);
+        if (!user || !user.roles.includes('sovereign')) return null;
+        return this.zk.issueChallenge(username);
+    }
+
+    verifyZkProof(sessionToken: string, proof: Parameters<ZkAuthService['verifyProof']>[1]): boolean {
+        const session = this.sessions.get(sessionToken);
+        if (!session) return false;
+        const ok = this.zk.verifyProof(session.username, proof);
+        if (ok) session.zkVerified = true;
+        return ok;
     }
 
     resolveSession(token: string): ConsoleSession | null {
@@ -195,6 +286,9 @@ export class ConsoleAuthService {
             return null;
         }
         if (this.config.consoleMfaRequired && !session.mfaVerified) return null;
+        if (this.config.webauthnRequired && !session.webauthnVerified) return null;
+        const zkRequired = !!process.env.NOMAD_ZK_SOVEREIGN_PUBLIC_KEY?.trim();
+        if (zkRequired && session.roles.includes('sovereign') && !session.zkVerified) return null;
         return session;
     }
 

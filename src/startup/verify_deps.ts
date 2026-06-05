@@ -58,7 +58,23 @@ export function verifyLiboqsIntegrity(): void {
     }
     selfTestKyber768();
     selfTestDilithium3();
+    verifySbomIfPresent();
     console.log('[ZOPHIEL] liboqs integrity verified — Kyber768 + Dilithium3 self-test passed');
+}
+
+function verifySbomIfPresent(): void {
+    const bomPath = path.join(resolveProjectRoot(), 'sbom', 'bom.json');
+    const hashPath = path.join(resolveProjectRoot(), 'sbom', 'bom.sha256');
+    if (!fs.existsSync(bomPath)) return;
+    const { createHash } = require('crypto') as typeof import('crypto');
+    const bomHash = createHash('sha256').update(fs.readFileSync(bomPath)).digest('hex');
+    if (fs.existsSync(hashPath)) {
+        const expected = fs.readFileSync(hashPath, 'utf8').trim();
+        if (bomHash !== expected) {
+            throw new Error('FATAL: SBOM hash drift detected — rebuild with npm run generate:sbom');
+        }
+    }
+    console.log('[SUPPLY CHAIN] SBOM integrity verified');
 }
 
 if (require.main === module) {

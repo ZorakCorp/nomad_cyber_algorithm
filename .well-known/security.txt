@@ -1,0 +1,7 @@
+Contact: mailto:security@zorakcorp.com
+Expires: 2027-06-05T00:00:00.000Z
+Encryption: https://github.com/ZorakCorp/nomad_cyber_algorithm/releases/download/security/nomad-security.asc
+Preferred-Languages: en
+Canonical: https://github.com/ZorakCorp/nomad_cyber_algorithm/.well-known/security.txt
+Policy: https://github.com/ZorakCorp/nomad_cyber_algorithm/blob/main/SECURITY.md
+Acknowledgments: https://github.com/ZorakCorp/nomad_cyber_algorithm/security/advisories

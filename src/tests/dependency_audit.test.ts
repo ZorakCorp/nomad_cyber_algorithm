@@ -5,6 +5,9 @@ import { assert, runTests, TestCase } from './test_runner';
 const ALLOWED_EXTERNAL = new Set([
     '@open-quantum-safe/oqs-javascript',
     '@types/node',
+    '@noble/curves',
+    '@simplewebauthn/server',
+    'argon2',
     'ioredis',
     'typescript',
 ]);
@@ -28,8 +31,16 @@ function isExternalPackage(specifier: string): boolean {
     if (specifier.startsWith('.') || specifier.startsWith('/')) return false;
     if (specifier === 'crypto' || specifier === 'net' || specifier === 'http' ||
         specifier === 'fs' || specifier === 'path' || specifier === 'buffer' ||
-        specifier === 'child_process') return false;
+        specifier === 'child_process' || specifier === 'worker_threads') return false;
     return true;
+}
+
+function isAllowedExternal(specifier: string): boolean {
+    if (ALLOWED_EXTERNAL.has(specifier)) return true;
+    for (const allowed of ALLOWED_EXTERNAL) {
+        if (specifier.startsWith(`${allowed}/`)) return true;
+    }
+    return false;
 }
 
 function auditDependencies(srcRoot: string): string[] {
@@ -40,7 +51,7 @@ function auditDependencies(srcRoot: string): string[] {
         while ((match = IMPORT_RE.exec(content)) !== null) {
             const specifier = match[1] ?? match[2];
             if (!specifier || !isExternalPackage(specifier)) continue;
-            if (!ALLOWED_EXTERNAL.has(specifier)) {
+            if (!isAllowedExternal(specifier)) {
                 violations.push(`${path.relative(srcRoot, file)}: disallowed import "${specifier}"`);
             }
         }

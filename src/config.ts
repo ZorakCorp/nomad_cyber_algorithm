@@ -46,14 +46,32 @@ export interface NomadConfig {
     dbVaultKeyPath: string | null;
     fileVaultKeyPath: string | null;
     redisUrl: string | null;
+    webauthnRequired: boolean;
+    tpmRequired: boolean;
+    hsmRequired: boolean;
 }
 
 export function loadConfig(): NomadConfig {
     const allowlistRaw = process.env.NOMAD_CLIENT_ALLOWLIST?.trim();
     const devMode = process.env.NOMAD_DEV_MODE === 'true';
-    const suiteRaw = envString('NOMAD_ALGORITHM_SUITE', 'kyber768_dilithium3');
+    const defaultSuite = devMode ? 'kyber768_dilithium3' : 'kyber1024_dilithium5';
+    const suiteRaw = envString('NOMAD_ALGORITHM_SUITE', defaultSuite);
     if (!supportedSuiteIds().includes(suiteRaw as AlgorithmSuiteId)) {
         throw new Error(`Invalid NOMAD_ALGORITHM_SUITE: ${suiteRaw}. Supported: ${supportedSuiteIds().join(', ')}`);
+    }
+    if (!devMode && suiteRaw === 'kyber768_dilithium3') {
+        throw new Error(
+            'kyber768_dilithium3 is permitted only in dev/compatibility mode. ' +
+            'Set NOMAD_DEV_MODE=true or use kyber1024_dilithium5 for production.'
+        );
+    }
+    if (devMode && suiteRaw === 'kyber768_dilithium3') {
+        console.warn(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            message: 'Using kyber768_dilithium3 in dev mode — not NIST production tier.',
+            component: 'config',
+        }));
     }
     resolveAlgorithmSuite(suiteRaw as AlgorithmSuiteId);
 
@@ -90,6 +108,9 @@ export function loadConfig(): NomadConfig {
         dbVaultKeyPath: process.env.NOMAD_DB_VAULT_KEY_PATH?.trim() || null,
         fileVaultKeyPath: process.env.NOMAD_FILE_VAULT_KEY_PATH?.trim() || null,
         redisUrl: process.env.NOMAD_REDIS_URL?.trim() || null,
+        webauthnRequired: process.env.NOMAD_WEBAUTHN_REQUIRED !== 'false' && !devMode,
+        tpmRequired: process.env.NOMAD_TPM_REQUIRED === 'true',
+        hsmRequired: process.env.NOMAD_HSM_REQUIRED === 'true' || (!devMode && process.env.NOMAD_HSM_ENABLED === 'true'),
     };
 }
 

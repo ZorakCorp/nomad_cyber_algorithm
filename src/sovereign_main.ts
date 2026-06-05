@@ -31,7 +31,7 @@ async function runSovereignDemo() {
         await client.sendEncryptedMessage('Sovereign channel — no wire patterns.', 'sovereign');
         await new Promise((r) => setTimeout(r, 500));
 
-        const login = stack.consoleAuth.login('admin', TEST_CONSOLE_PASSWORD);
+        const login = await stack.consoleAuth.login('admin', TEST_CONSOLE_PASSWORD);
         if (login?.mfaRequired) {
             const totp = generateTotp(TEST_CONSOLE_TOTP);
             stack.consoleAuth.verifyMfa(login.sessionToken, totp);

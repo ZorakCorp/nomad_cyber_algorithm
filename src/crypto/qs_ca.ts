@@ -1,6 +1,7 @@
 import { Signature } from '@open-quantum-safe/oqs-javascript';
 import { CryptoService } from './crypto_service';
 import { encodeBinary, decodeBinary } from '../protocol';
+import { CertificateTransparencyLog } from './ct_log';
 
 export interface PQCertificatePayload {
     version: number;
@@ -27,12 +28,15 @@ export class QuantumSafeCA {
     rootPublicKey: Uint8Array;
     private rootPrivateKey: Uint8Array;
     private pinnedServerKeys: Set<string> = new Set();
+    readonly ctLog: CertificateTransparencyLog;
 
     constructor(
         private crypto: CryptoService,
         subject: string = 'Nomad QS-CA Root',
-        trustedRootPublicKey?: Uint8Array
+        trustedRootPublicKey?: Uint8Array,
+        ctLog?: CertificateTransparencyLog
     ) {
+        this.ctLog = ctLog ?? new CertificateTransparencyLog();
         this.rootSig = crypto.createSig();
         if (trustedRootPublicKey) {
             this.rootPublicKey = trustedRootPublicKey;
@@ -70,7 +74,9 @@ export class QuantumSafeCA {
         };
         const canonical = Buffer.from(JSON.stringify(payload));
         const signature = this.crypto.sign(this.rootSig, this.rootPrivateKey, canonical);
-        return { ...payload, signature: encodeBinary(signature) };
+        const cert = { ...payload, signature: encodeBinary(signature) };
+        this.ctLog.append(cert, signature);
+        return cert;
     }
 
     verifyCertificate(cert: PQCertificate): boolean {

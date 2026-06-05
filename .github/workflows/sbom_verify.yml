@@ -1,0 +1,35 @@
+name: SBOM Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  sbom-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run generate:sbom
+      - name: Verify lockfile hashes pinned
+        run: |
+          node -e "
+          const fs = require('fs');
+          const lock = JSON.parse(fs.readFileSync('package-lock.json','utf8'));
+          const pkgs = Object.entries(lock.packages || {}).filter(([k]) => k && k !== '');
+          const missing = pkgs.filter(([,m]) => !m.integrity && !m.resolved?.startsWith('file:'));
+          if (missing.length) {
+            console.error('Dependencies without pinned integrity:', missing.map(([k]) => k));
+            process.exit(1);
+          }
+          console.log('All', pkgs.length, 'lockfile entries have pinned hashes or are local file deps.');
+          "
+      - name: Verify SBOM exists
+        run: test -f sbom/bom.json && test -f sbom/bom.sha256

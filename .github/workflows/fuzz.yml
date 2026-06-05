@@ -1,0 +1,22 @@
+name: Continuous Fuzzing
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci && npm run build
+      - name: Run fuzz corpus
+        run: npm run test:fuzz
+      - name: Report crash triage placeholder
+        if: failure()
+        run: echo "::error::Fuzz test failure — treat as P0 security incident per NIST directive P2"

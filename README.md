@@ -6,8 +6,8 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
-[![PQC](https://img.shields.io/badge/Quantum--Safe-Kyber768%20%2B%20Dilithium3-7C3AED?style=for-the-badge)](https://openquantumsafe.org/)
-[![Tests](https://img.shields.io/badge/Tests-38%20passing-22C55E?style=for-the-badge)](src/tests/)
+[![PQC](https://img.shields.io/badge/Quantum--Safe-Kyber1024%20%2B%20Dilithium5-7C3AED?style=for-the-badge)](https://openquantumsafe.org/)
+[![Tests](https://img.shields.io/badge/Tests-56%20passing-22C55E?style=for-the-badge)](src/tests/)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge)](LICENSE)
 
 **Quantum-resistant microservice mesh · Chaos cipher (no wire patterns) · Full security perimeter**
@@ -16,9 +16,9 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  KYBER768 KEM  →  QS-CA Identity  →  Imperial Cipher Stack  →  GCM    ║
-║  DILITHIUM3 SIG →  Allowlist + Replay Guard  →  Chaos Mode (no pattern) ║
-║  Gateway + Console MFA  →  DB/File Vaults  →  WAF + Helm deployment    ║
+║  KYBER1024 KEM →  QS-CA + CT Log  →  Imperial Cipher Stack  →  GCM    ║
+║  DILITHIUM5 SIG →  WebAuthn + ZK Auth  →  Chaos Mode (no pattern)     ║
+║  HSM + TPM  →  Gateway + Vaults  →  SBOM + SAST/DAST CI gates         ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -38,9 +38,11 @@
 
 ## ◇ Overview
 
-**Nomad Cyber Algorithm** is a TypeScript post-quantum cryptography (PQC) stack for securing microservice communication and sensitive data. It combines:
+**Nomad Cyber Algorithm** is a TypeScript post-quantum cryptography (PQC) stack for securing microservice communication and sensitive data — **created by [Aureon Software](https://aureonai.app/)** and used in special ways by **[ARVOR](https://arvor.xyz/)** for zero-knowledge encrypted messaging and private vault operations.
 
-- **Kyber768** key encapsulation and **Dilithium3** signatures
+It combines:
+
+- **Kyber1024** key encapsulation and **Dilithium5** signatures (production default)
 - **QS-CA** certificate pinning with mutual authentication
 - **Imperial cipher stack** (7 historical layers) + **Aureon occult veil**
 - **Chaos mode** — per-message unpredictable layer order, padding, and timing jitter
@@ -51,8 +53,8 @@ Designed for high-assurance environments: air-gapped networks, SCI/TS workloads,
 
 | Capability | Implementation |
 |:---|:---|
-| **Key Exchange** | Kyber768 (ML-KEM) via OQS |
-| **Authentication** | Dilithium3 + QS-CA cert verification |
+| **Key Exchange** | Kyber1024 (ML-KEM) via OQS |
+| **Authentication** | Dilithium5 + QS-CA cert verification + CT log |
 | **Data Channel** | Imperial cipher → AES-256-GCM + HKDF |
 | **Unpredictability** | Chaos padding, layer shuffle, timing veil |
 | **Perimeter** | Gateway RBAC, console MFA, rate limits |
@@ -155,12 +157,18 @@ npm run start:sovereign
 ```bash
 # Required for production (dev mode OFF)
 NOMAD_DEV_MODE=false
-NOMAD_CONSOLE_ADMIN_PASSWORD=<strong-password>
-NOMAD_CONSOLE_ADMIN_TOTP=<base32-secret>
+NOMAD_ALGORITHM_SUITE=kyber1024_dilithium5
+NOMAD_CONSOLE_ADMIN_PASSWORD=<strong-password-20+chars>
+NOMAD_WEBAUTHN_REQUIRED=true
+NOMAD_WEBAUTHN_CREDENTIAL_ID=<base64url-credential-id>
+NOMAD_WEBAUTHN_PUBLIC_KEY=<base64url-public-key>
+NOMAD_HSM_ENABLED=true
+NOMAD_PKCS11_LIB=/path/to/libpkcs11.so
 NOMAD_DB_VAULT_KEY_PATH=/secrets/db-vault.key    # 64 hex chars
 NOMAD_FILE_VAULT_KEY_PATH=/secrets/file-vault.key
 NOMAD_QS_CA_ROOT_PATH=/secrets/qs-ca-root.b64
 NOMAD_CLIENT_ALLOWLIST=<base64-dilithium-pubkeys>
+NOMAD_AUDIT_CHAIN_KEY=<64-hex-chars>
 ```
 
 > **Note:** `@open-quantum-safe/oqs-javascript` ships as a local stub at `vendor/oqs-javascript/`. Replace with real liboqs bindings for production PQC.
@@ -206,7 +214,7 @@ NOMAD_CHAOS_JITTER_MS=40     # response timing noise
 ## ◇ Tests
 
 ```bash
-npm test    # 38 tests: protocol, fuzz, imperial, chaos, security audit, live integration
+npm test    # 56 tests: protocol, fuzz, imperial, chaos, security, NIST hardening, live integration
 ```
 
 | Suite | Tests | Coverage |
@@ -216,6 +224,8 @@ npm test    # 38 tests: protocol, fuzz, imperial, chaos, security audit, live in
 | `imperial.test` | 7 | Cipher stack round-trips |
 | `chaos.test` | 5 | Padding, shuffle, no-pattern ciphertext |
 | `security_audit.test` | 6 | Allowlist, tickets, replay cap |
+| `nist_hardening.test` | 10 | Argon2id, Shamir, audit chain, CT log, ZK auth |
+| `zophiel_hardening.test` | 8 | Startup secrets, liboqs verify, vault keys |
 | `live_integration.test` | 2 | Live HTTP + PQC end-to-end |
 | `session.test` | 3 | Session tickets + cache |
 | `dependency_audit.test` | 3 | Supply chain allowlist |
@@ -241,7 +251,10 @@ nomad_cyber_algorithm/
 │   ├── vault/                   # File vault
 │   ├── crypto/                  # PQC, GCM, QS-CA
 │   ├── security/                # Replay, rate limit, allowlist
-│   └── tests/                   # 38 tests incl. live integration
+│   ├── startup/                 # TPM attestation, SBOM verify, bootstrap
+│   └── tests/                   # 56 tests incl. NIST hardening + live integration
+├── docs/                        # Threat model, IR runbook, algorithm migration
+├── .github/workflows/           # SAST, DAST, SBOM verify, fuzz CI
 ├── deploy/
 │   ├── waf/                     # nginx + Cloudflare rules
 │   └── helm/nomad-cyber/        # Kubernetes chart
@@ -278,12 +291,20 @@ npm run sidecar
 
 <div align="center">
 
-### **#HouseOfAsher** Research & Developers
+### Created by **[Aureon Software](https://aureonai.app/)**
 
-### **Aureon Software** · ZANOEM · **+ Cursor**
+Uncensored AI intelligence for security architecture, cryptographic design, and production hardening.
+
+### Used in special ways by **[ARVOR](https://arvor.xyz/)**
+
+Zero-knowledge encrypted messenger and private vault — Nomad's PQC stack, chaos cipher, and sovereign perimeter power ARVOR's end-to-end encrypted channels and sealed data vaults.
+
+<br/>
+
+**#HouseOfAsher** Research & Developers · ZANOEM · **+ Cursor**
 
 **ZorakCorp** · [github.com/ZorakCorp/nomad_cyber_algorithm](https://github.com/ZorakCorp/nomad_cyber_algorithm)
 
-<sub>MIT License · Nomad Cyber Algorithm v1.1.0</sub>
+<sub>MIT License · Nomad Cyber Algorithm v1.2.0</sub>
 
 </div>

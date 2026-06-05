@@ -1,0 +1,29 @@
+name: DAST
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  zap-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci && npm run build
+      - name: Start staging stack
+        run: |
+          export NOMAD_DEV_MODE=true
+          export NOMAD_CONSOLE_ADMIN_PASSWORD='ZophielSecureP@ssw0rd2026!'
+          export NOMAD_CONSOLE_ADMIN_TOTP='ABCDEFGHIJKLMNOPQR'
+          node dist/sovereign_main.js &
+          sleep 8
+      - name: OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://127.0.0.1:8080/health'
+          cmd_options: '-a -j'
+          allow_issue_writing: false

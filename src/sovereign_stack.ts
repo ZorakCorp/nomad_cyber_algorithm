@@ -45,12 +45,14 @@ export class SovereignStack {
 
     private constructor(
         private config: NomadConfig,
-        distributedLimiter: ReturnType<typeof createDistributedRateLimiter>
+        distributedLimiter: ReturnType<typeof createDistributedRateLimiter>,
+        consoleAuth: ConsoleAuthService,
+        audit: AuditLog
     ) {
         this.logger = new StructuredLogger(config.logLevel);
-        this.audit = new AuditLog();
+        this.audit = audit;
         this.metrics = new MetricsCollector();
-        this.consoleAuth = new ConsoleAuthService(config, this.audit);
+        this.consoleAuth = consoleAuth;
         const sessionStore = SessionStore.fromEnv(this.logger);
         this.pqc = new PQCServerService(config, {
             audit: this.audit,
@@ -76,9 +78,11 @@ export class SovereignStack {
 
     static async create(config: NomadConfig): Promise<SovereignStack> {
         const logger = new StructuredLogger(config.logLevel);
+        const audit = new AuditLog();
         const redis = await createRedisClient(config.redisUrl, logger);
         const distributedLimiter = createDistributedRateLimiter(config, redis, logger);
-        return new SovereignStack(config, distributedLimiter);
+        const consoleAuth = await ConsoleAuthService.create(config, audit);
+        return new SovereignStack(config, distributedLimiter, consoleAuth, audit);
     }
 
     private wireRoutes(): void {
