@@ -1,0 +1,33 @@
+{
+  "name": "nomad-cyber-algorithm",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZorakCorp/nomad_cyber_algorithm.git"
+  },
+  "version": "1.0.0",
+  "description": "Quantum-resistant microservice communication demo in TypeScript using Kyber768 (KEM) and Dilithium3 (SIG).",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "quantum-safe",
+    "post-quantum-cryptography",
+    "kyber",
+    "dilithium",
+    "typescript",
+    "cybersecurity",
+    "microservice"
+  ],
+  "author": "Aureon ZALI Design Lab",
+  "license": "MIT",
+  "dependencies": {
+    "@open-quantum-safe/oqs-javascript": "^0.1.0",
+    "@types/node": "^20.14.9"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.3"
+  }
+}
