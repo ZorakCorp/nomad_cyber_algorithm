@@ -6,6 +6,7 @@ import { RateLimiter } from '../security/rate_limiter';
 import { DistributedRateLimiter, createDistributedRateLimiter } from '../security/distributed_rate_limiter';
 import { StructuredLogger } from '../ops/logger';
 import { AuditLog } from '../ops/audit_log';
+import { VitalGuard } from '../organism/vital_guard';
 
 export interface GatewayContext {
     principal: Principal | null;
@@ -20,7 +21,7 @@ export type SessionResolver = (token: string) => Principal | null;
 export class ApiGateway {
     private server: http.Server | null = null;
     private routes = new Map<string, GatewayHandler>();
-    private publicRoutes = new Set<string>(['GET /health']);
+    private publicRoutes = new Set<string>(['GET /health', 'GET /organism/vitals']);
     private rbac = new RbacPolicy();
     private rateLimiter: RateLimiter;
     private distributedLimiter: DistributedRateLimiter;
@@ -30,7 +31,8 @@ export class ApiGateway {
         private logger: StructuredLogger,
         private audit: AuditLog,
         private resolveSession?: SessionResolver,
-        distributedLimiter?: DistributedRateLimiter
+        distributedLimiter?: DistributedRateLimiter,
+        private vitalGuard?: VitalGuard
     ) {
         this.rateLimiter = new RateLimiter(config.maxConnections, config.maxHandshakesPerMinute);
         this.distributedLimiter = distributedLimiter ??
@@ -96,6 +98,15 @@ export class ApiGateway {
 
             const principal = this.parsePrincipal(req);
             const isPublic = this.publicRoutes.has(routeKey);
+            if (!isPublic && this.vitalGuard && !this.vitalGuard.isVital()) {
+                this.audit.record('handshake_failed', { correlationId, detail: `gateway lockdown: ${method} ${path}` });
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: 'ORGANISM_LOCKDOWN',
+                    message: 'All security organs must be vital simultaneously. Partial breach = total shutdown.',
+                }));
+                return;
+            }
             if (!isPublic && !this.rbac.authorize(principal, method, path)) {
                 this.audit.record('client_rejected_allowlist', { correlationId, detail: `${method} ${path}` });
                 res.writeHead(403, { 'Content-Type': 'application/json' });

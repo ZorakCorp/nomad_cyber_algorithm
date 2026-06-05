@@ -5,6 +5,7 @@ import { StructuredLogger } from '../ops/logger';
 export interface RedisLike {
     incr(key: string): Promise<number>;
     expire(key: string, seconds: number): Promise<number>;
+    ping?(): Promise<string>;
 }
 
 export interface DistributedRateLimiter {

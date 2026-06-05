@@ -3,12 +3,14 @@ import * as fs from 'fs';
 import { CRYPTO_CONSTANTS } from '../crypto/crypto_service';
 import { AuditLog } from '../ops/audit_log';
 import { StructuredLogger } from '../ops/logger';
+import { VitalGuard } from '../organism/vital_guard';
 
 export interface DbVaultOptions {
     keyPath?: string | null;
     audit: AuditLog;
     devMode?: boolean;
     logger?: StructuredLogger;
+    vitalGuard?: VitalGuard;
 }
 
 function isProductionMode(): boolean {
@@ -87,9 +89,11 @@ export class DbVault {
     }
 
     encryptField(table: string, column: string, value: string, tenantId: string): string {
+        this.options.vitalGuard?.requireVital(`db_vault.encrypt:${table}.${column}`);
         const iv = randomBytes(CRYPTO_CONSTANTS.GCM_IV_BYTES);
+        const binding = this.options.vitalGuard?.getFingerprint() ?? 'unbound';
         const aad = createHmac('sha256', this.masterKey)
-            .update(`${table}:${column}:${tenantId}`)
+            .update(`${table}:${column}:${tenantId}:${binding}`)
             .digest();
         const cipher = createCipheriv('aes-256-gcm', this.masterKey, iv);
         cipher.setAAD(aad);
@@ -101,12 +105,14 @@ export class DbVault {
     }
 
     decryptField(table: string, column: string, sealed: string, tenantId: string): string {
+        this.options.vitalGuard?.requireVital(`db_vault.decrypt:${table}.${column}`);
         const raw = Buffer.from(sealed, 'base64');
         const iv = raw.subarray(0, CRYPTO_CONSTANTS.GCM_IV_BYTES);
         const tag = raw.subarray(CRYPTO_CONSTANTS.GCM_IV_BYTES, CRYPTO_CONSTANTS.GCM_IV_BYTES + 16);
         const ciphertext = raw.subarray(CRYPTO_CONSTANTS.GCM_IV_BYTES + 16);
+        const binding = this.options.vitalGuard?.getFingerprint() ?? 'unbound';
         const aad = createHmac('sha256', this.masterKey)
-            .update(`${table}:${column}:${tenantId}`)
+            .update(`${table}:${column}:${tenantId}:${binding}`)
             .digest();
         const decipher = createDecipheriv('aes-256-gcm', this.masterKey, iv);
         decipher.setAAD(aad);

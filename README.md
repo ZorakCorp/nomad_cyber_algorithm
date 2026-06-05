@@ -7,7 +7,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![PQC](https://img.shields.io/badge/Quantum--Safe-Kyber1024%20%2B%20Dilithium5-7C3AED?style=for-the-badge)](https://openquantumsafe.org/)
-[![Tests](https://img.shields.io/badge/Tests-56%20passing-22C55E?style=for-the-badge)](src/tests/)
+[![Tests](https://img.shields.io/badge/Tests-61%20passing-22C55E?style=for-the-badge)](src/tests/)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge)](LICENSE)
 
 **Quantum-resistant microservice mesh · Chaos cipher (no wire patterns) · Full security perimeter**
@@ -25,6 +25,7 @@
 <br/>
 
 [Overview](#-overview) ·
+[Sovereign Organism](#-sovereign-organism) ·
 [Architecture](#-architecture) ·
 [Quick Start](#-quick-start) ·
 [Security](#-security-model) ·
@@ -60,6 +61,55 @@ Designed for high-assurance environments: air-gapped networks, SCI/TS workloads,
 | **Perimeter** | Gateway RBAC, console MFA, rate limits |
 | **Data at Rest** | DB field vault + encrypted file vault |
 | **Transport** | Length-prefixed TCP framing + optional sidecar |
+
+---
+
+## ◇ Sovereign Organism
+
+Nomad is not a bag of security features — it is a **living organism** where every subsystem is an organ that depends on the others. Damage one organ and the entire body enters **lockdown**. An attacker cannot pick off a single layer; they must breach **all eleven organs simultaneously** while the organism pulses every 30 seconds re-verifying the full chain.
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         SOVEREIGN ORGANISM          │
+                    │   pulse → verify all → vital|die    │
+                    └─────────────────────────────────────┘
+           ┌────────┼────────┬────────┬────────┬────────┼────────┐
+           ▼        ▼        ▼        ▼        ▼        ▼        ▼
+      Crypto    Audit     TPM      HSM      QS-CA   Console   Redis
+      Core     Immune   Skeletal   Heart    Liver    Brain    Nerves
+       ♥         🛡        🦴        ♥        🫀       🧠       ⚡
+           └────────┴────────┴────────┴────────┴────────┴────────┘
+                              │
+                    PQC Lungs · Gateway Skin · Vault Marrow
+```
+
+| Organ | Role | Depends On |
+|:---|:---|:---|
+| **Crypto Core** ♥ | liboqs Kyber+Dilithium self-test | — |
+| **Supply Spleen** | SBOM hash verification | Crypto Core |
+| **Audit Immune** 🛡 | Chained HMAC tamper-evident log | Crypto Core |
+| **TPM Skeletal** 🦴 | Boot PCR attestation | Crypto Core |
+| **HSM Heart** | Non-extractable hardware keys | Crypto, TPM, Audit |
+| **CA Liver** 🫀 | QS-CA + certificate transparency | Crypto, Audit, HSM |
+| **Console Brain** 🧠 | Argon2id + WebAuthn + ZK proof | Audit, CA Liver |
+| **Rate Nerves** ⚡ | Distributed Redis rate limits | Audit |
+| **PQC Lungs** | Kyber/Dilithium secure channels | HSM, CA, Audit, Crypto |
+| **Gateway Skin** | RBAC perimeter + session auth | Console, PQC, Audit, Nerves |
+| **Vault Marrow** | Encrypted data-at-rest | TPM, HSM, Audit, Crypto |
+
+### Doctrine
+
+> **Partial compromise = total shutdown.**  
+> Breach the audit chain → lockdown. Lose TPM attestation → lockdown. HSM disconnects → lockdown.  
+> Vault encryption binds to the organism fingerprint — data sealed under one pulse cannot be read under another.
+
+```bash
+# Inspect live organ vitals (public endpoint)
+curl http://localhost:8080/organism/vitals
+
+# Pulse interval (default 30s — re-verifies ALL organs)
+NOMAD_ORGANISM_PULSE_MS=30000
+```
 
 ---
 
@@ -214,7 +264,7 @@ NOMAD_CHAOS_JITTER_MS=40     # response timing noise
 ## ◇ Tests
 
 ```bash
-npm test    # 56 tests: protocol, fuzz, imperial, chaos, security, NIST hardening, live integration
+npm test    # 61 tests: protocol, fuzz, imperial, chaos, security, NIST hardening, organism, live integration
 ```
 
 | Suite | Tests | Coverage |
@@ -225,6 +275,7 @@ npm test    # 56 tests: protocol, fuzz, imperial, chaos, security, NIST hardenin
 | `chaos.test` | 5 | Padding, shuffle, no-pattern ciphertext |
 | `security_audit.test` | 6 | Allowlist, tickets, replay cap |
 | `nist_hardening.test` | 10 | Argon2id, Shamir, audit chain, CT log, ZK auth |
+| `organism.test` | 5 | Interlocking organs, lockdown, dependency graph |
 | `zophiel_hardening.test` | 8 | Startup secrets, liboqs verify, vault keys |
 | `live_integration.test` | 2 | Live HTTP + PQC end-to-end |
 | `session.test` | 3 | Session tickets + cache |
@@ -251,8 +302,9 @@ nomad_cyber_algorithm/
 │   ├── vault/                   # File vault
 │   ├── crypto/                  # PQC, GCM, QS-CA
 │   ├── security/                # Replay, rate limit, allowlist
+│   ├── organism/                # Sovereign organism — interlocking organ vitals
 │   ├── startup/                 # TPM attestation, SBOM verify, bootstrap
-│   └── tests/                   # 56 tests incl. NIST hardening + live integration
+│   └── tests/                   # 61 tests incl. organism + NIST hardening
 ├── docs/                        # Threat model, IR runbook, algorithm migration
 ├── .github/workflows/           # SAST, DAST, SBOM verify, fuzz CI
 ├── deploy/

@@ -12,6 +12,8 @@ const tests = [
     'live_integration.test.js',
     'zophiel_hardening.test.js',
     'nist_hardening.test.js',
+    'organism.test.js',
+    'battle.test.js',
 ];
 
 let failed = false;

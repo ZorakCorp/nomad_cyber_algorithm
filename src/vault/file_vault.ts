@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CRYPTO_CONSTANTS } from '../crypto/crypto_service';
 import { AuditLog } from '../ops/audit_log';
+import { VitalGuard } from '../organism/vital_guard';
 
 export type VirusScanFn = (data: Buffer, filename: string) => Promise<boolean>;
 
@@ -15,13 +16,15 @@ export class FileVault {
         private vaultDir: string,
         private audit: AuditLog,
         masterKey?: Buffer,
-        private scanFn: VirusScanFn = defaultScan
+        private scanFn: VirusScanFn = defaultScan,
+        private vitalGuard?: VitalGuard
     ) {
         fs.mkdirSync(vaultDir, { recursive: true });
         this.masterKey = masterKey ?? randomBytes(32);
     }
 
     async store(filename: string, data: Buffer, owner: string): Promise<string> {
+        this.vitalGuard?.requireVital(`file_vault.store:${filename}`);
         const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
         if (!(await this.scanFn(data, safeName))) {
             this.audit.record('handshake_failed', { detail: `vault scan rejected: ${safeName}` });
@@ -29,7 +32,8 @@ export class FileVault {
         }
         const objectId = randomBytes(12).toString('hex');
         const iv = randomBytes(CRYPTO_CONSTANTS.GCM_IV_BYTES);
-        const aad = createHmac('sha256', this.masterKey).update(`${objectId}:${owner}`).digest();
+        const binding = this.vitalGuard?.getFingerprint() ?? 'unbound';
+        const aad = createHmac('sha256', this.masterKey).update(`${objectId}:${owner}:${binding}`).digest();
         const cipher = createCipheriv('aes-256-gcm', this.masterKey, iv);
         cipher.setAAD(aad);
         const ciphertext = Buffer.concat([cipher.update(data), cipher.final()]);
@@ -50,6 +54,7 @@ export class FileVault {
     }
 
     retrieve(objectId: string, owner: string): Buffer {
+        this.vitalGuard?.requireVital(`file_vault.retrieve:${objectId}`);
         if (!/^[a-f0-9]{24}$/.test(objectId)) {
             throw new Error('Invalid vault object ID.');
         }
@@ -70,7 +75,8 @@ export class FileVault {
         const iv = Buffer.from(record.iv, 'hex');
         const tag = Buffer.from(record.tag, 'hex');
         const ciphertext = Buffer.from(record.ciphertext, 'hex');
-        const aad = createHmac('sha256', this.masterKey).update(`${objectId}:${owner}`).digest();
+        const binding = this.vitalGuard?.getFingerprint() ?? 'unbound';
+        const aad = createHmac('sha256', this.masterKey).update(`${objectId}:${owner}:${binding}`).digest();
         const decipher = createDecipheriv('aes-256-gcm', this.masterKey, iv);
         decipher.setAAD(aad);
         decipher.setAuthTag(tag);

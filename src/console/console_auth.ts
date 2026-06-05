@@ -6,6 +6,7 @@ import { Principal } from '../gateway/rbac';
 import { StructuredLogger } from '../ops/logger';
 import { WebAuthnAuthService } from './webauthn_auth';
 import { ZkAuthService } from './zk_auth';
+import { VitalGuard } from '../organism/vital_guard';
 
 export interface ConsoleUser {
     username: string;
@@ -146,6 +147,7 @@ export class ConsoleAuthService {
     private mfaAttempts = new Map<string, { count: number; resetAt: number }>();
     readonly webauthn: WebAuthnAuthService;
     readonly zk: ZkAuthService;
+    private vitalGuard?: VitalGuard;
 
     private constructor(
         private config: NomadConfig,
@@ -155,10 +157,15 @@ export class ConsoleAuthService {
         this.zk = new ZkAuthService(audit);
     }
 
-    static async create(config: NomadConfig, audit: AuditLog): Promise<ConsoleAuthService> {
+    static async create(config: NomadConfig, audit: AuditLog, vitalGuard?: VitalGuard): Promise<ConsoleAuthService> {
         const svc = new ConsoleAuthService(config, audit);
+        svc.vitalGuard = vitalGuard;
         await svc.initializeAdmin();
         return svc;
+    }
+
+    setVitalGuard(guard: VitalGuard): void {
+        this.vitalGuard = guard;
     }
 
     private async initializeAdmin(): Promise<void> {
@@ -194,6 +201,12 @@ export class ConsoleAuthService {
     }
 
     async login(username: string, password: string): Promise<{ sessionToken: string; mfaRequired: boolean } | null> {
+        try {
+            this.vitalGuard?.requireVital('console.login');
+        } catch {
+            this.audit.record('handshake_failed', { detail: 'console login blocked — organism lockdown' });
+            return null;
+        }
         const user = this.users.get(username);
         const valid = user ? await verifyPassword(password, user.passwordHash) : await verifyPassword(password, DUMMY_HASH);
         if (!user || !valid) {
@@ -279,6 +292,7 @@ export class ConsoleAuthService {
     }
 
     resolveSession(token: string): ConsoleSession | null {
+        if (this.vitalGuard && !this.vitalGuard.isVital()) return null;
         const session = this.sessions.get(token);
         if (!session) return null;
         if (Date.now() > session.expiresAt) {

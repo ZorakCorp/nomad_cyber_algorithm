@@ -15,6 +15,7 @@
     "test:protocol": "npm run build && node dist/tests/protocol.test.js",
     "test:fuzz": "npm run build && node dist/tests/fuzz.test.js",
     "test:audit": "npm run build && node dist/tests/dependency_audit.test.js",
+    "test:battle": "npm run build && node dist/tests/battle.test.js",
     "sidecar": "npm run build && node dist/sidecar_main.js",
     "verify:deps": "npm run build && node dist/startup/verify_deps.js",
     "generate:sbom": "npm run build && node dist/scripts/generate_sbom.js",

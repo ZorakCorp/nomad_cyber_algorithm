@@ -35,6 +35,7 @@ import { imperialConfigFromNomad } from './imperial/config';
 import { MessageQueue } from './utils/message_queue';
 import { jitteredDelay } from './chaos/timing_veil';
 import { DistributedRateLimiter, createDistributedRateLimiter } from './security/distributed_rate_limiter';
+import { VitalGuard } from './organism/vital_guard';
 
 class PQCConnection {
     private clientSigPublicKey: Uint8Array | null = null;
@@ -491,6 +492,7 @@ export class PQCServerService {
 
     private server: net.Server | null = null;
     private distributedLimiter: DistributedRateLimiter;
+    private vitalGuard?: VitalGuard;
 
     constructor(
         private config: NomadConfig = loadConfig(),
@@ -499,6 +501,8 @@ export class PQCServerService {
             metrics?: MetricsCollector;
             sessionStore?: SessionStore;
             distributedLimiter?: DistributedRateLimiter;
+            vitalGuard?: VitalGuard;
+            qsCa?: QuantumSafeCA;
         }
     ) {
         configureFraming(this.config);
@@ -509,7 +513,8 @@ export class PQCServerService {
         this.sessionStore = deps?.sessionStore ?? SessionStore.fromEnv(this.logger, this.config.devMode);
         this.distributedLimiter = deps?.distributedLimiter ??
             createDistributedRateLimiter(this.config, null, this.logger);
-        this.qsCa = new QuantumSafeCA(this.crypto);
+        this.vitalGuard = deps?.vitalGuard;
+        this.qsCa = deps?.qsCa ?? new QuantumSafeCA(this.crypto);
         createKeyStore(this.crypto, this.config.hsmEnabled);
         this.kemRotation = new KeyRotationManager(this.crypto, 'server-kem');
         this.allowlist = new ClientAllowlist(this.config.clientAllowlist, this.config.requireAllowlist);
@@ -545,6 +550,11 @@ export class PQCServerService {
     }
 
     private async acceptConnection(socket: net.Socket): Promise<void> {
+        if (this.vitalGuard && !this.vitalGuard.isVital()) {
+            this.audit.record('handshake_failed', { detail: 'PQC blocked — organism not vital' });
+            socket.destroy();
+            return;
+        }
         if (this.shutdown.isShuttingDown()) {
             socket.destroy();
             return;

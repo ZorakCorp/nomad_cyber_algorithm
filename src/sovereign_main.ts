@@ -3,19 +3,19 @@ import { SovereignStack } from './sovereign_stack';
 import { PQCClientService } from './pqc_client_service';
 import { generateTotp } from './console/console_auth';
 import { IMPERIAL_CIPHER_CORPUS } from './imperial/research_corpus';
-import { verifyLiboqsIntegrity } from './startup/verify_deps';
 import { applyTestConsoleEnv, TEST_CONSOLE_PASSWORD, TEST_CONSOLE_TOTP } from './tests/test_credentials';
 
 async function runSovereignDemo() {
-    verifyLiboqsIntegrity();
     applyTestConsoleEnv();
     const config = loadConfig();
-    console.log('--- Nomad Sovereign Stack — Full Perimeter + Chaos Mode ---\n');
+    console.log('--- Nomad Sovereign Organism — Interlocking Security Organs ---\n');
     console.log(`[AUREON] Civilizational mappings: ${IMPERIAL_CIPHER_CORPUS.length}`);
     console.log(`[CHAOS] Unpredictable layer order, padding, timing jitter: ${config.chaosModeEnabled ? 'ACTIVE' : 'off'}`);
     console.log(`[STACK] Gateway :${config.gatewayPort} | Console :${config.consolePort} | PQC :${config.port}\n`);
 
     const stack = await SovereignStack.create(config);
+    console.log(`[ORGANISM] Vital: ${stack.organism.isVital()} | Fingerprint: ${stack.organism.getFingerprint().slice(0, 16)}...`);
+    console.log(`[ORGANISM] Organs: ${stack.organism.getVitalsReport().organs.map((o) => `${o.name}=${o.state}`).join(' · ')}\n`);
     stack.getPqc().getRouter().register('sovereign', async (body) => {
         return Buffer.from(`[sovereign] ${body.length} bytes through chaos cipher.`);
     });
