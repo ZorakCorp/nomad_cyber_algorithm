@@ -2,10 +2,12 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { NomadConfig } from '../config';
 import { AuditLog } from '../ops/audit_log';
 import { Principal } from '../gateway/rbac';
+import { StructuredLogger } from '../ops/logger';
 
 export interface ConsoleUser {
     username: string;
     passwordHash: string;
+    passwordSalt: string;
     totpSecret: string;
     roles: Array<'viewer' | 'operator' | 'admin' | 'sovereign'>;
 }
@@ -18,7 +20,12 @@ export interface ConsoleSession {
     expiresAt: number;
 }
 
-const DUMMY_HASH = scryptSync('invalid-login-path', randomBytes(16), 32).toString('hex');
+const FORBIDDEN_PASSWORD_SUBSTRINGS = [
+    'change', 'password', 'admin', 'default', 'secret', 'nomad',
+];
+
+const DUMMY_SALT = Buffer.from('6e6f6d61642d64756d6d792d73616c742d3031', 'hex');
+const DUMMY_HASH = scryptSync('invalid-login-path', DUMMY_SALT, 32).toString('hex');
 
 function hashPassword(password: string, salt: Buffer): string {
     return scryptSync(password, salt, 32).toString('hex');
@@ -55,39 +62,82 @@ function verifyTotp(secret: string, code: string, timestampMs = Date.now()): boo
     return false;
 }
 
+function containsForbiddenSubstring(value: string): string | null {
+    const lower = value.toLowerCase();
+    for (const word of FORBIDDEN_PASSWORD_SUBSTRINGS) {
+        if (lower.includes(word)) return word;
+    }
+    return null;
+}
+
+/**
+ * Validates console credentials before any server binds a port.
+ * Never bypassed by devMode.
+ */
+export function validateStartupSecretsOrThrow(): { password: string; totp: string } {
+    const password = process.env.NOMAD_CONSOLE_ADMIN_PASSWORD?.trim();
+    const totp = process.env.NOMAD_CONSOLE_ADMIN_TOTP?.trim();
+
+    if (!password) {
+        throw new Error('NOMAD_CONSOLE_ADMIN_PASSWORD is required. No default credentials are permitted.');
+    }
+    if (!totp) {
+        throw new Error('NOMAD_CONSOLE_ADMIN_TOTP is required. No default TOTP secret is permitted.');
+    }
+    if (password.length < 20) {
+        throw new Error(`NOMAD_CONSOLE_ADMIN_PASSWORD must be at least 20 characters (got ${password.length}).`);
+    }
+    if (totp.length < 16) {
+        throw new Error(`NOMAD_CONSOLE_ADMIN_TOTP must be at least 16 characters (got ${totp.length}).`);
+    }
+    const forbidden = containsForbiddenSubstring(password);
+    if (forbidden) {
+        throw new Error(`NOMAD_CONSOLE_ADMIN_PASSWORD contains forbidden substring "${forbidden}".`);
+    }
+    return { password, totp };
+}
+
+/** Fatal startup guard — logs audit event and exits process on failure. */
+export function validateStartupSecrets(audit?: AuditLog, logger?: StructuredLogger): { password: string; totp: string } {
+    try {
+        return validateStartupSecretsOrThrow();
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const payload = { level: 'fatal' as const, message, component: 'console_auth' };
+        if (logger) {
+            logger.error(message, payload);
+        } else {
+            console.error(JSON.stringify({ ts: new Date().toISOString(), ...payload }));
+        }
+        audit?.record('handshake_failed', { detail: `FATAL_STARTUP: ${message}` });
+        process.exit(1);
+    }
+}
+
 export class ConsoleAuthService {
     private users = new Map<string, ConsoleUser>();
     private sessions = new Map<string, ConsoleSession>();
-    private passwordSalt = randomBytes(16);
     private mfaAttempts = new Map<string, { count: number; resetAt: number }>();
 
     constructor(
         private config: NomadConfig,
         private audit: AuditLog
     ) {
-        const adminSecret = process.env.NOMAD_CONSOLE_ADMIN_TOTP ?? 'NOMAD-DEV-TOTP-SECRET';
-        const adminPass = process.env.NOMAD_CONSOLE_ADMIN_PASSWORD ?? 'change-me-in-production';
-
-        if (!config.devMode) {
-            if (adminPass === 'change-me-in-production') {
-                throw new Error('Set NOMAD_CONSOLE_ADMIN_PASSWORD in production (dev mode is off).');
-            }
-            if (adminSecret === 'NOMAD-DEV-TOTP-SECRET') {
-                throw new Error('Set NOMAD_CONSOLE_ADMIN_TOTP in production (dev mode is off).');
-            }
-        }
-
+        const { password, totp } = validateStartupSecrets(audit);
+        const adminSalt = randomBytes(32);
         this.users.set('admin', {
             username: 'admin',
-            passwordHash: hashPassword(adminPass, this.passwordSalt),
-            totpSecret: adminSecret,
+            passwordSalt: adminSalt.toString('hex'),
+            passwordHash: hashPassword(password, adminSalt),
+            totpSecret: totp,
             roles: ['sovereign'],
         });
     }
 
     login(username: string, password: string): { sessionToken: string; mfaRequired: boolean } | null {
         const user = this.users.get(username);
-        const hash = hashPassword(password, this.passwordSalt);
+        const salt = user ? Buffer.from(user.passwordSalt, 'hex') : DUMMY_SALT;
+        const hash = hashPassword(password, salt);
         const expected = user?.passwordHash ?? DUMMY_HASH;
         const a = Buffer.from(hash, 'hex');
         const b = Buffer.from(expected, 'hex');

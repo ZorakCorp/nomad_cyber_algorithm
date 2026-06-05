@@ -10,6 +10,7 @@ const tests = [
     'security_audit.test.js',
     'chaos.test.js',
     'live_integration.test.js',
+    'zophiel_hardening.test.js',
 ];
 
 let failed = false;

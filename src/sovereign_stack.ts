@@ -10,6 +10,9 @@ import { FileVault } from './vault/file_vault';
 import { StructuredLogger } from './ops/logger';
 import { AuditLog } from './ops/audit_log';
 import { MetricsCollector } from './ops/metrics';
+import { createDistributedRateLimiter } from './security/distributed_rate_limiter';
+import { createRedisClient } from './startup/redis_client';
+import { SessionStore } from './session/session_store';
 
 const OBJECT_ID_RE = /^[a-f0-9]{24}$/;
 
@@ -40,25 +43,42 @@ export class SovereignStack {
     readonly audit: AuditLog;
     readonly metrics: MetricsCollector;
 
-    constructor(private config: NomadConfig) {
+    private constructor(
+        private config: NomadConfig,
+        distributedLimiter: ReturnType<typeof createDistributedRateLimiter>
+    ) {
         this.logger = new StructuredLogger(config.logLevel);
         this.audit = new AuditLog();
         this.metrics = new MetricsCollector();
         this.consoleAuth = new ConsoleAuthService(config, this.audit);
-        this.pqc = new PQCServerService(config, { audit: this.audit, metrics: this.metrics });
+        const sessionStore = SessionStore.fromEnv(this.logger);
+        this.pqc = new PQCServerService(config, {
+            audit: this.audit,
+            metrics: this.metrics,
+            sessionStore,
+            distributedLimiter,
+        });
         this.gateway = new ApiGateway(
             config,
             this.logger,
             this.audit,
-            (token) => this.consoleAuth.resolvePrincipal(token)
+            (token) => this.consoleAuth.resolvePrincipal(token),
+            distributedLimiter
         );
         this.console = new ConsoleServer(config, this.consoleAuth, this.logger, this.audit, async () => {
             this.pqc.rotateKeys();
         });
-        this.dbVault = new DbVault({ keyPath: config.dbVaultKeyPath, audit: this.audit });
+        this.dbVault = DbVault.fromEnv(this.audit, this.logger, config.devMode);
         const fileVaultKey = loadOrCreateVaultKey(config.fileVaultKeyPath, config.devMode);
         this.fileVault = new FileVault(config.vaultDir, this.audit, fileVaultKey);
         this.wireRoutes();
+    }
+
+    static async create(config: NomadConfig): Promise<SovereignStack> {
+        const logger = new StructuredLogger(config.logLevel);
+        const redis = await createRedisClient(config.redisUrl, logger);
+        const distributedLimiter = createDistributedRateLimiter(config, redis, logger);
+        return new SovereignStack(config, distributedLimiter);
     }
 
     private wireRoutes(): void {

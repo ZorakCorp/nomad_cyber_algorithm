@@ -34,6 +34,7 @@ import { frameMessage, parseMessages, configureFraming } from './utils';
 import { imperialConfigFromNomad } from './imperial/config';
 import { MessageQueue } from './utils/message_queue';
 import { jitteredDelay } from './chaos/timing_veil';
+import { DistributedRateLimiter, createDistributedRateLimiter } from './security/distributed_rate_limiter';
 
 class PQCConnection {
     private clientSigPublicKey: Uint8Array | null = null;
@@ -480,7 +481,7 @@ export class PQCServerService {
 
     private allowlist: ClientAllowlist;
     private rateLimiter: RateLimiter;
-    private sessionStore = new SessionStore();
+    private sessionStore: SessionStore;
     private router = new TenantRouter();
     private logger: StructuredLogger;
     private metrics = new MetricsCollector();
@@ -489,16 +490,25 @@ export class PQCServerService {
     private health: HealthServer;
 
     private server: net.Server | null = null;
+    private distributedLimiter: DistributedRateLimiter;
 
     constructor(
         private config: NomadConfig = loadConfig(),
-        deps?: { audit?: AuditLog; metrics?: MetricsCollector }
+        deps?: {
+            audit?: AuditLog;
+            metrics?: MetricsCollector;
+            sessionStore?: SessionStore;
+            distributedLimiter?: DistributedRateLimiter;
+        }
     ) {
         configureFraming(this.config);
         this.crypto = new CryptoService(this.config.algorithmSuite);
         this.logger = new StructuredLogger(this.config.logLevel);
         if (deps?.audit) this.audit = deps.audit;
         if (deps?.metrics) this.metrics = deps.metrics;
+        this.sessionStore = deps?.sessionStore ?? SessionStore.fromEnv(this.logger, this.config.devMode);
+        this.distributedLimiter = deps?.distributedLimiter ??
+            createDistributedRateLimiter(this.config, null, this.logger);
         this.qsCa = new QuantumSafeCA(this.crypto);
         createKeyStore(this.crypto, this.config.hsmEnabled);
         this.kemRotation = new KeyRotationManager(this.crypto, 'server-kem');
@@ -534,62 +544,81 @@ export class PQCServerService {
         this.allowlist.register(publicKey);
     }
 
+    private async acceptConnection(socket: net.Socket): Promise<void> {
+        if (this.shutdown.isShuttingDown()) {
+            socket.destroy();
+            return;
+        }
+        const peerIp = socket.remoteAddress ?? 'unknown';
+        if (!this.rateLimiter.tryAcquireConnection()) {
+            this.metrics.increment('rateLimitRejected');
+            this.audit.record('rate_limit_exceeded', { detail: 'max connections' });
+            socket.destroy();
+            return;
+        }
+        if (!(await this.distributedLimiter.tryAcquireConnection(peerIp))) {
+            this.metrics.increment('rateLimitRejected');
+            this.audit.record('rate_limit_exceeded', { detail: 'distributed connection cap' });
+            socket.destroy();
+            this.rateLimiter.releaseConnection();
+            return;
+        }
+        if (!this.rateLimiter.tryAcquireHandshake()) {
+            this.metrics.increment('rateLimitRejected');
+            this.audit.record('rate_limit_exceeded', { detail: 'handshake rate' });
+            socket.destroy();
+            this.rateLimiter.releaseConnection();
+            return;
+        }
+        if (!(await this.distributedLimiter.tryAcquireHandshake(peerIp))) {
+            this.metrics.increment('rateLimitRejected');
+            this.audit.record('rate_limit_exceeded', { detail: 'distributed handshake rate' });
+            socket.destroy();
+            this.rateLimiter.releaseConnection();
+            return;
+        }
+
+        let connectionReleased = false;
+        const releaseConnection = () => {
+            if (!connectionReleased) {
+                connectionReleased = true;
+                this.rateLimiter.releaseConnection();
+            }
+        };
+        const releaseHandshake = () => {
+            this.rateLimiter.releaseHandshake();
+        };
+
+        this.shutdown.track(socket);
+        this.logger.info('Client connected', { component: 'server', peer: peerIp });
+
+        new PQCConnection(
+            socket,
+            this.crypto,
+            this.kemRotation,
+            this.qsCa,
+            this.serverSig,
+            this.serverSigPrivateKey,
+            this.serverSigPublicKey,
+            this.config,
+            this.allowlist,
+            this.sessionStore,
+            this.router,
+            this.logger,
+            this.metrics,
+            this.audit,
+            releaseHandshake,
+            releaseConnection,
+        );
+    }
+
     start(): void {
         if (this.config.requireAllowlist && this.allowlist.size() === 0) {
             throw new Error('Allowlist is required but no client keys are registered or configured.');
         }
         this.health.start();
         this.server = net.createServer((socket) => {
-            if (this.shutdown.isShuttingDown()) {
-                socket.destroy();
-                return;
-            }
-            if (!this.rateLimiter.tryAcquireConnection()) {
-                this.metrics.increment('rateLimitRejected');
-                this.audit.record('rate_limit_exceeded', { detail: 'max connections' });
-                socket.destroy();
-                return;
-            }
-            if (!this.rateLimiter.tryAcquireHandshake()) {
-                this.metrics.increment('rateLimitRejected');
-                this.audit.record('rate_limit_exceeded', { detail: 'handshake rate' });
-                socket.destroy();
-                this.rateLimiter.releaseConnection();
-                return;
-            }
-
-            let connectionReleased = false;
-            const releaseConnection = () => {
-                if (!connectionReleased) {
-                    connectionReleased = true;
-                    this.rateLimiter.releaseConnection();
-                }
-            };
-            const releaseHandshake = () => {
-                this.rateLimiter.releaseHandshake();
-            };
-
-            this.shutdown.track(socket);
-            this.logger.info('Client connected', { component: 'server', peer: socket.remoteAddress ?? undefined });
-
-            new PQCConnection(
-                socket,
-                this.crypto,
-                this.kemRotation,
-                this.qsCa,
-                this.serverSig,
-                this.serverSigPrivateKey,
-                this.serverSigPublicKey,
-                this.config,
-                this.allowlist,
-                this.sessionStore,
-                this.router,
-                this.logger,
-                this.metrics,
-                this.audit,
-                releaseHandshake,
-                releaseConnection,
-            );
+            void this.acceptConnection(socket);
         });
 
         this.server.listen(this.config.port, this.config.bindHost, () => {

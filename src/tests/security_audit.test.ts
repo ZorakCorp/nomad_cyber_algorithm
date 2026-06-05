@@ -29,7 +29,7 @@ const tests: TestCase[] = [
     {
         name: 'session ticket is one-time consumable',
         fn: () => {
-            const store = new SessionStore();
+            const store = new SessionStore(Buffer.alloc(32, 9));
             const ticket = store.issue('c', Buffer.alloc(32, 9), 'cpk', 'spk', 60_000);
             assert(!!store.redeem(ticket), 'first redeem');
             assert(store.redeem(ticket) === null, 'second redeem rejected');

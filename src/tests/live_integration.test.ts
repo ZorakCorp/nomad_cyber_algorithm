@@ -4,6 +4,8 @@ import { SovereignStack } from '../sovereign_stack';
 import { PQCClientService } from '../pqc_client_service';
 import { generateTotp } from '../console/console_auth';
 import { assert, runTests, TestCase } from './test_runner';
+import { applyTestConsoleEnv, TEST_CONSOLE_PASSWORD, TEST_CONSOLE_TOTP } from './test_credentials';
+import { verifyLiboqsIntegrity } from '../startup/verify_deps';
 
 function httpGet(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
@@ -47,14 +49,15 @@ const tests: TestCase[] = [
     {
         name: 'live: sovereign stack health + auth + PQC round-trip',
         fn: async () => {
-            process.env.NOMAD_DEV_MODE = 'true';
+            verifyLiboqsIntegrity();
+            applyTestConsoleEnv();
             process.env.NOMAD_PORT = '18443';
             process.env.NOMAD_GATEWAY_PORT = '18080';
             process.env.NOMAD_CONSOLE_PORT = '18081';
             process.env.NOMAD_HEALTH_PORT = '19090';
 
             const config = loadConfig();
-            const stack = new SovereignStack(config);
+            const stack = await SovereignStack.create(config);
             const qsCa = stack.getPqc().getQuantumSafeCA();
             const client = new PQCClientService('127.0.0.1', config.port, qsCa, config);
             stack.getPqc().registerClient(client.getClientSigPublicKey());
@@ -72,7 +75,7 @@ const tests: TestCase[] = [
 
                 const login = await httpPost(config.consolePort, '/console/login', {
                     username: 'admin',
-                    password: process.env.NOMAD_CONSOLE_ADMIN_PASSWORD ?? 'change-me-in-production',
+                    password: TEST_CONSOLE_PASSWORD,
                 });
                 assert(login.status === 200, 'console login');
                 const loginJson = JSON.parse(login.body) as { sessionToken: string; mfaRequired: boolean };
@@ -108,24 +111,24 @@ const tests: TestCase[] = [
     {
         name: 'live: vault download rejects invalid object id',
         fn: async () => {
-            process.env.NOMAD_DEV_MODE = 'true';
+            applyTestConsoleEnv();
             process.env.NOMAD_PORT = '28443';
             process.env.NOMAD_GATEWAY_PORT = '28080';
             process.env.NOMAD_CONSOLE_PORT = '28081';
             process.env.NOMAD_HEALTH_PORT = '29090';
 
             const config = loadConfig();
-            const stack = new SovereignStack(config);
+            const stack = await SovereignStack.create(config);
             stack.start();
 
             try {
                 const login = await httpPost(config.consolePort, '/console/login', {
                     username: 'admin',
-                    password: 'change-me-in-production',
+                    password: TEST_CONSOLE_PASSWORD,
                 });
                 const { sessionToken, mfaRequired } = JSON.parse(login.body) as { sessionToken: string; mfaRequired: boolean };
                 if (mfaRequired) {
-                    const totp = generateTotp('NOMAD-DEV-TOTP-SECRET');
+                    const totp = generateTotp(TEST_CONSOLE_TOTP);
                     await httpPost(config.consolePort, '/console/mfa', { sessionToken, code: totp });
                 }
 

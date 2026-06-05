@@ -1,11 +1,58 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import { CRYPTO_CONSTANTS } from '../crypto/crypto_service';
 import { AuditLog } from '../ops/audit_log';
+import { StructuredLogger } from '../ops/logger';
 
 export interface DbVaultOptions {
     keyPath?: string | null;
     audit: AuditLog;
+    devMode?: boolean;
+    logger?: StructuredLogger;
+}
+
+function isProductionMode(): boolean {
+    return process.env.NODE_ENV === 'production' || process.env.NOMAD_DEV_MODE !== 'true';
+}
+
+function parseKeyHex(raw: string, source: string): Buffer {
+    const trimmed = raw.trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+        throw new Error(
+            `${source} must contain exactly 64 hexadecimal characters (32 bytes). Got ${trimmed.length} chars.`
+        );
+    }
+    return Buffer.from(trimmed, 'hex');
+}
+
+function resolveMasterKey(
+    keyPath: string | null,
+    devMode: boolean,
+    logger?: StructuredLogger
+): Buffer {
+    if (keyPath && fs.existsSync(keyPath)) {
+        const raw = fs.readFileSync(keyPath, 'utf8');
+        return parseKeyHex(raw, `DB vault key file at ${keyPath}`);
+    }
+
+    if (isProductionMode() && !devMode) {
+        throw new Error(
+            'DB vault key path is required in production. Set NOMAD_DB_VAULT_KEY_PATH to a persistent 32-byte hex key file.'
+        );
+    }
+
+    if (keyPath && !fs.existsSync(keyPath)) {
+        throw new Error(`NOMAD_DB_VAULT_KEY_PATH points to missing file: ${keyPath}`);
+    }
+
+    const warning =
+        'DB vault using ephemeral key — all encrypted data will be unrecoverable after restart. Set NOMAD_DB_VAULT_KEY_PATH for persistence.';
+    if (logger) {
+        logger.warn(warning, { component: 'db_vault', level: 'warn' });
+    } else {
+        console.warn(JSON.stringify({ ts: new Date().toISOString(), level: 'warn', message: warning, component: 'db_vault' }));
+    }
+    return randomBytes(32);
 }
 
 /**
@@ -15,14 +62,28 @@ export class DbVault {
     private masterKey: Buffer;
 
     constructor(private options: DbVaultOptions) {
-        if (options.keyPath && fs.existsSync(options.keyPath)) {
-            this.masterKey = Buffer.from(fs.readFileSync(options.keyPath, 'utf8').trim(), 'hex');
+        const devMode = options.devMode ?? process.env.NOMAD_DEV_MODE === 'true';
+        this.masterKey = resolveMasterKey(options.keyPath ?? null, devMode, options.logger);
+    }
+
+    static generateKeyFile(filePath: string, logger?: StructuredLogger): void {
+        const keyHex = randomBytes(32).toString('hex');
+        fs.writeFileSync(filePath, `${keyHex}\n`, { encoding: 'utf8', mode: 0o600 });
+        const msg = `DB vault key written to ${filePath} (mode 0o600). Set NOMAD_DB_VAULT_KEY_PATH=${filePath}`;
+        if (logger) {
+            logger.info(msg, { component: 'db_vault' });
         } else {
-            this.masterKey = randomBytes(32);
+            console.log(`[DB VAULT] ${msg}`);
         }
-        if (this.masterKey.length !== 32) {
-            throw new Error('DB vault key must be 32 bytes (64 hex chars).');
-        }
+    }
+
+    static fromEnv(audit: AuditLog, logger?: StructuredLogger, devMode = process.env.NOMAD_DEV_MODE === 'true'): DbVault {
+        return new DbVault({
+            keyPath: process.env.NOMAD_DB_VAULT_KEY_PATH?.trim() ?? null,
+            audit,
+            devMode,
+            logger,
+        });
     }
 
     encryptField(table: string, column: string, value: string, tenantId: string): string {
@@ -63,9 +124,5 @@ export class DbVault {
         this.options.audit.record('message_decrypted', {
             detail: `db-query:${actor}:${tenantId}:${fingerprint}`,
         });
-    }
-
-    exportKeyHint(): string {
-        return createHmac('sha256', this.masterKey).update('hint').digest('hex').slice(0, 12);
     }
 }

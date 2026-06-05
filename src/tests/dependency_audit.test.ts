@@ -5,6 +5,7 @@ import { assert, runTests, TestCase } from './test_runner';
 const ALLOWED_EXTERNAL = new Set([
     '@open-quantum-safe/oqs-javascript',
     '@types/node',
+    'ioredis',
     'typescript',
 ]);
 

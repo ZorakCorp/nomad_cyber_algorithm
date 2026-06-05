@@ -3,18 +3,19 @@ import { SovereignStack } from './sovereign_stack';
 import { PQCClientService } from './pqc_client_service';
 import { generateTotp } from './console/console_auth';
 import { IMPERIAL_CIPHER_CORPUS } from './imperial/research_corpus';
+import { verifyLiboqsIntegrity } from './startup/verify_deps';
+import { applyTestConsoleEnv, TEST_CONSOLE_PASSWORD, TEST_CONSOLE_TOTP } from './tests/test_credentials';
 
 async function runSovereignDemo() {
-    if (!process.env.NOMAD_DEV_MODE) {
-        process.env.NOMAD_DEV_MODE = 'true';
-    }
+    verifyLiboqsIntegrity();
+    applyTestConsoleEnv();
     const config = loadConfig();
     console.log('--- Nomad Sovereign Stack — Full Perimeter + Chaos Mode ---\n');
     console.log(`[AUREON] Civilizational mappings: ${IMPERIAL_CIPHER_CORPUS.length}`);
     console.log(`[CHAOS] Unpredictable layer order, padding, timing jitter: ${config.chaosModeEnabled ? 'ACTIVE' : 'off'}`);
     console.log(`[STACK] Gateway :${config.gatewayPort} | Console :${config.consolePort} | PQC :${config.port}\n`);
 
-    const stack = new SovereignStack(config);
+    const stack = await SovereignStack.create(config);
     stack.getPqc().getRouter().register('sovereign', async (body) => {
         return Buffer.from(`[sovereign] ${body.length} bytes through chaos cipher.`);
     });
@@ -30,9 +31,9 @@ async function runSovereignDemo() {
         await client.sendEncryptedMessage('Sovereign channel — no wire patterns.', 'sovereign');
         await new Promise((r) => setTimeout(r, 500));
 
-        const login = stack.consoleAuth.login('admin', process.env.NOMAD_CONSOLE_ADMIN_PASSWORD ?? 'change-me-in-production');
+        const login = stack.consoleAuth.login('admin', TEST_CONSOLE_PASSWORD);
         if (login?.mfaRequired) {
-            const totp = generateTotp(process.env.NOMAD_CONSOLE_ADMIN_TOTP ?? 'NOMAD-DEV-TOTP-SECRET');
+            const totp = generateTotp(TEST_CONSOLE_TOTP);
             stack.consoleAuth.verifyMfa(login.sessionToken, totp);
             console.log('[CONSOLE] MFA verified');
         }

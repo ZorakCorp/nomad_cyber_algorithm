@@ -45,6 +45,7 @@ export interface NomadConfig {
     vaultDir: string;
     dbVaultKeyPath: string | null;
     fileVaultKeyPath: string | null;
+    redisUrl: string | null;
 }
 
 export function loadConfig(): NomadConfig {
@@ -88,6 +89,7 @@ export function loadConfig(): NomadConfig {
         vaultDir: envString('NOMAD_VAULT_DIR', './nomad-vault'),
         dbVaultKeyPath: process.env.NOMAD_DB_VAULT_KEY_PATH?.trim() || null,
         fileVaultKeyPath: process.env.NOMAD_FILE_VAULT_KEY_PATH?.trim() || null,
+        redisUrl: process.env.NOMAD_REDIS_URL?.trim() || null,
     };
 }
 

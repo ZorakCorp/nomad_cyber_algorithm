@@ -2,8 +2,13 @@ import { loadConfig } from './config';
 import { PQCServerService } from './pqc_server_service';
 import { PQCClientService } from './pqc_client_service';
 import { IMPERIAL_CIPHER_CORPUS } from './imperial/research_corpus';
+import { verifyLiboqsIntegrity } from './startup/verify_deps';
 
 async function runPQC_MicroserviceDemo() {
+    verifyLiboqsIntegrity();
+    if (process.env.NODE_ENV !== 'production' && !process.env.NOMAD_DEV_MODE) {
+        process.env.NOMAD_DEV_MODE = 'true';
+    }
     const config = loadConfig();
     console.log('--- Nomad Cyber Algorithm — Imperial PQC + Aureon Occult Veil Demo ---\n');
     console.log(`[AUREON] Imperial cipher doctrine loaded: ${IMPERIAL_CIPHER_CORPUS.length} civilizational mappings`);

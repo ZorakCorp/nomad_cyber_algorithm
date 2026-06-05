@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { CRYPTO_CONSTANTS } from '../crypto/crypto_service';
+import { StructuredLogger } from '../ops/logger';
 
 export interface SessionTicketPayload {
     correlationId: string;
@@ -9,12 +10,57 @@ export interface SessionTicketPayload {
     expiresAt: number;
 }
 
+function parseMasterKeyHex(raw: string): Buffer {
+    const trimmed = raw.trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+        throw new Error('NOMAD_SESSION_MASTER_KEY must be exactly 64 hexadecimal characters (32 bytes).');
+    }
+    return Buffer.from(trimmed, 'hex');
+}
+
+function isDevRuntime(explicitDevMode?: boolean): boolean {
+    if (explicitDevMode !== undefined) return explicitDevMode;
+    return process.env.NOMAD_DEV_MODE === 'true';
+}
+
 export class SessionStore {
     private masterKey: Buffer;
     private consumedTickets = new Set<string>();
 
-    constructor(masterSecret?: Buffer) {
-        this.masterKey = masterSecret ?? randomBytes(32);
+    constructor(masterSecret: Buffer) {
+        if (masterSecret.length !== 32) {
+            throw new Error('SessionStore master key must be 32 bytes.');
+        }
+        this.masterKey = masterSecret;
+    }
+
+    static generateKey(): string {
+        const key = randomBytes(32).toString('hex');
+        console.log(`[SESSION] Generated session master key. Set NOMAD_SESSION_MASTER_KEY=${key}`);
+        return key;
+    }
+
+    static fromEnv(logger?: StructuredLogger, devMode?: boolean): SessionStore {
+        const raw = process.env.NOMAD_SESSION_MASTER_KEY?.trim();
+        if (raw) {
+            return new SessionStore(parseMasterKeyHex(raw));
+        }
+
+        if (!isDevRuntime(devMode)) {
+            throw new Error(
+                'NOMAD_SESSION_MASTER_KEY is required in production. ' +
+                'Run SessionStore.generateKey() to create a 64-char hex key and persist it.'
+            );
+        }
+
+        const warning =
+            'SessionStore using ephemeral master key — all session tickets invalidate on restart. Set NOMAD_SESSION_MASTER_KEY for persistence.';
+        if (logger) {
+            logger.warn(warning, { component: 'session_store' });
+        } else {
+            console.warn(JSON.stringify({ ts: new Date().toISOString(), level: 'warn', message: warning }));
+        }
+        return new SessionStore(randomBytes(32));
     }
 
     issue(

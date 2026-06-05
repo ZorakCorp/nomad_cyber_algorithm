@@ -6,7 +6,7 @@ const tests: TestCase[] = [
     {
         name: 'session store issue and redeem round-trip',
         fn: () => {
-            const store = new SessionStore();
+            const store = new SessionStore(Buffer.alloc(32, 7));
             const key = Buffer.alloc(32, 7);
             const ticket = store.issue('corr-1', key, 'clientpk', 'serverpk', 60_000);
             const payload = store.redeem(ticket);
@@ -19,7 +19,7 @@ const tests: TestCase[] = [
     {
         name: 'session store rejects tampered ticket',
         fn: () => {
-            const store = new SessionStore();
+            const store = new SessionStore(Buffer.alloc(32, 7));
             const ticket = store.issue('c', Buffer.alloc(32), 'pk', 'spk', 60_000);
             const tampered = ticket.slice(0, -4) + 'AAAA';
             assert(store.redeem(tampered) === null, 'tampered');

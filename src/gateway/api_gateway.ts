@@ -3,6 +3,7 @@ import { NomadConfig } from '../config';
 import { RbacPolicy, Principal } from './rbac';
 import { applySecurityHeaders } from './security_headers';
 import { RateLimiter } from '../security/rate_limiter';
+import { DistributedRateLimiter, createDistributedRateLimiter } from '../security/distributed_rate_limiter';
 import { StructuredLogger } from '../ops/logger';
 import { AuditLog } from '../ops/audit_log';
 
@@ -22,14 +23,18 @@ export class ApiGateway {
     private publicRoutes = new Set<string>(['GET /health']);
     private rbac = new RbacPolicy();
     private rateLimiter: RateLimiter;
+    private distributedLimiter: DistributedRateLimiter;
 
     constructor(
         private config: NomadConfig,
         private logger: StructuredLogger,
         private audit: AuditLog,
-        private resolveSession?: SessionResolver
+        private resolveSession?: SessionResolver,
+        distributedLimiter?: DistributedRateLimiter
     ) {
         this.rateLimiter = new RateLimiter(config.maxConnections, config.maxHandshakesPerMinute);
+        this.distributedLimiter = distributedLimiter ??
+            createDistributedRateLimiter(config, null, logger);
     }
 
     getRbac(): RbacPolicy {
@@ -66,8 +71,16 @@ export class ApiGateway {
         const routeKey = `${method.toUpperCase()} ${path}`;
         const correlationId = req.headers['x-correlation-id']?.toString() ?? `gw-${Date.now()}`;
 
+        const clientIp = req.socket.remoteAddress ?? 'unknown';
         if (!this.rateLimiter.tryAcquireConnection()) {
             this.audit.record('rate_limit_exceeded', { correlationId, detail: 'gateway connection cap' });
+            res.writeHead(429, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'RATE_LIMITED' }));
+            return;
+        }
+        if (!(await this.distributedLimiter.tryAcquireConnection(clientIp))) {
+            this.audit.record('rate_limit_exceeded', { correlationId, detail: 'gateway distributed cap' });
+            this.rateLimiter.releaseConnection();
             res.writeHead(429, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'RATE_LIMITED' }));
             return;

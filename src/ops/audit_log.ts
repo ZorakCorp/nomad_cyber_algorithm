@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -36,7 +37,7 @@ export class AuditLog {
 
     record(type: AuditEventType, fields: Omit<AuditEvent, 'id' | 'ts' | 'type'> = {}): void {
         const event: AuditEvent = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            id: `${Date.now()}-${randomBytes(8).toString('hex')}`,
             ts: new Date().toISOString(),
             type,
             ...fields,

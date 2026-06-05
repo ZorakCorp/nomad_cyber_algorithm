@@ -15,7 +15,8 @@
     "test:protocol": "npm run build && node dist/tests/protocol.test.js",
     "test:fuzz": "npm run build && node dist/tests/fuzz.test.js",
     "test:audit": "npm run build && node dist/tests/dependency_audit.test.js",
-    "sidecar": "npm run build && node dist/sidecar_main.js"
+    "sidecar": "npm run build && node dist/sidecar_main.js",
+    "verify:deps": "npm run build && node dist/startup/verify_deps.js"
   },
   "keywords": [
     "quantum-safe",
@@ -30,7 +31,8 @@
   "license": "MIT",
   "dependencies": {
     "@open-quantum-safe/oqs-javascript": "file:vendor/oqs-javascript",
-    "@types/node": "^20.14.9"
+    "@types/node": "^20.14.9",
+    "ioredis": "^5.4.1"
   },
   "devDependencies": {
     "typescript": "^5.5.3"
