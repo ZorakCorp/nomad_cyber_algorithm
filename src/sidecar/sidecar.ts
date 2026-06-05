@@ -5,12 +5,11 @@ import { QuantumSafeCA } from '../crypto/qs_ca';
 import { StructuredLogger } from '../ops/logger';
 
 /**
- * Transparent TCP sidecar: accepts local connections and forwards raw bytes
- * through an established PQC client channel; encrypted responses are written back.
+ * Transparent TCP sidecar — one isolated PQC session per local connection.
  */
 export class PQCSidecar {
     private server: net.Server | null = null;
-    private client: PQCClientService | null = null;
+    private activeClients = new Set<PQCClientService>();
 
     constructor(
         private listenPort: number,
@@ -26,23 +25,32 @@ export class PQCSidecar {
             throw new Error('QS-CA is required for sidecar upstream trust.');
         }
 
-        this.client = new PQCClientService(this.upstreamHost, this.upstreamPort, this.qsCa, this.config);
-        await this.client.connect();
-        await this.client.waitForHandshake();
-
         this.server = net.createServer((localSocket) => {
-            let localClosed = false;
+            void this.handleLocalConnection(localSocket);
+        });
 
-            this.client!.setApplicationResponseHandler((body, serviceId) => {
-                if (localClosed) return;
-                if (serviceId === 'sidecar') {
-                    localSocket.write(body);
-                }
+        this.server.listen(this.listenPort, '127.0.0.1', () => {
+            this.logger.info('PQC sidecar listening', { component: 'sidecar', port: this.listenPort });
+        });
+    }
+
+    private async handleLocalConnection(localSocket: net.Socket): Promise<void> {
+        let localClosed = false;
+        const client = new PQCClientService(this.upstreamHost, this.upstreamPort, this.qsCa, this.config);
+        this.activeClients.add(client);
+
+        try {
+            await client.connect();
+            await client.waitForHandshake();
+
+            client.setApplicationResponseHandler((body, serviceId) => {
+                if (localClosed || serviceId !== 'sidecar') return;
+                localSocket.write(body);
             });
 
             localSocket.on('data', async (chunk) => {
                 try {
-                    await this.client!.sendRaw(Buffer.from(chunk), 'sidecar');
+                    await client.sendRaw(Buffer.from(chunk), 'sidecar');
                 } catch (err) {
                     this.logger.error('Sidecar forward failed', {
                         component: 'sidecar',
@@ -51,26 +59,30 @@ export class PQCSidecar {
                     localSocket.end();
                 }
             });
-
-            localSocket.on('close', () => {
-                localClosed = true;
+        } catch (err) {
+            this.logger.error('Sidecar PQC session failed', {
+                component: 'sidecar',
+                error: err instanceof Error ? err.message : String(err),
             });
+            localSocket.end();
+            await client.disconnect();
+            this.activeClients.delete(client);
+            return;
+        }
 
-            localSocket.on('error', (err) => {
-                this.logger.error('Sidecar local socket error', {
-                    component: 'sidecar',
-                    error: err.message,
-                });
-            });
-        });
+        const cleanup = async () => {
+            localClosed = true;
+            this.activeClients.delete(client);
+            await client.disconnect();
+        };
 
-        this.server.listen(this.listenPort, '127.0.0.1', () => {
-            this.logger.info('PQC sidecar listening', { component: 'sidecar', port: this.listenPort });
-        });
+        localSocket.on('close', () => { void cleanup(); });
+        localSocket.on('error', () => { void cleanup(); });
     }
 
     async stop(): Promise<void> {
-        await this.client?.disconnect();
+        await Promise.all([...this.activeClients].map((c) => c.disconnect()));
+        this.activeClients.clear();
         this.server?.close();
     }
 }

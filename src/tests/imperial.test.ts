@@ -65,11 +65,12 @@ const tests: TestCase[] = [
             const stack = new ImperialCipherStack(masterKey, correlationId, {
                 enabled: true,
                 occultVeilEnabled: true,
+                chaosModeEnabled: true,
                 subject: 'Pharaoh Test Channel',
             });
             const plain = Buffer.from('Top Secret imperial dispatch');
-            const enc = stack.encipher(plain, ts);
-            const dec = stack.decipher(enc, ts);
+            const enc = stack.encipher(plain, ts, 1);
+            const dec = stack.decipher(enc, ts, 1);
             assert(dec.equals(plain), 'stack round-trip');
         },
     },
@@ -79,11 +80,12 @@ const tests: TestCase[] = [
             const stack = new ImperialCipherStack(masterKey, correlationId, {
                 enabled: true,
                 occultVeilEnabled: true,
+                chaosModeEnabled: false,
                 subject: 'Test',
             });
-            const enc = stack.encipher(Buffer.from('time-bound'), ts);
+            const enc = stack.encipher(Buffer.from('time-bound'), ts, 2);
             let threw = false;
-            try { stack.decipher(enc, ts + 3_600_001); } catch { threw = true; }
+            try { stack.decipher(enc, ts + 3_600_001, 2); } catch { threw = true; }
             assert(threw, 'wrong epoch');
         },
     },

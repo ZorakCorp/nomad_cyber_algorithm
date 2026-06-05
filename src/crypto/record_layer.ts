@@ -54,7 +54,7 @@ export class RecordLayer {
         const ts = payload.imperialTimestamp ?? Date.now();
         let serialized = this.serialize(payload);
         if (this.imperial) {
-            serialized = this.imperial.encipher(serialized, ts);
+            serialized = this.imperial.encipher(serialized, ts, sequence);
         }
         return this.crypto.encrypt(aesKey, serialized, {
             correlationId: this.correlationId,
@@ -73,7 +73,7 @@ export class RecordLayer {
             recordType,
         });
         if (this.imperial) {
-            plaintext = this.imperial.decipher(plaintext, imperialTimestamp ?? Date.now());
+            plaintext = this.imperial.decipher(plaintext, imperialTimestamp ?? Date.now(), record.sequence);
         }
         return this.deserialize(plaintext);
     }

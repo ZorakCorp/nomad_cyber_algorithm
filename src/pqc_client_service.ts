@@ -177,7 +177,10 @@ export class PQCClientService {
             try {
                 this.receivedBuffer = Buffer.concat([this.receivedBuffer, data]);
                 this.receivedBuffer = parseMessages(this.receivedBuffer, (message) => {
-                    this.messageQueue.enqueue(() => this.processMessage(message));
+                    this.messageQueue.enqueue(
+                        () => this.processMessage(message),
+                        (err) => this.failHandshake(err instanceof Error ? err.message : String(err), 'MESSAGE_ERROR')
+                    );
                 });
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);

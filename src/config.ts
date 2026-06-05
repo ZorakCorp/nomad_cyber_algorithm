@@ -35,6 +35,16 @@ export interface NomadConfig {
     imperialSubject: string;
     requireAllowlist: boolean;
     devMode: boolean;
+    chaosModeEnabled: boolean;
+    chaosJitterMs: number;
+    gatewayPort: number;
+    consolePort: number;
+    gatewayMaxBodyBytes: number;
+    consoleMfaRequired: boolean;
+    consoleSessionTtlMs: number;
+    vaultDir: string;
+    dbVaultKeyPath: string | null;
+    fileVaultKeyPath: string | null;
 }
 
 export function loadConfig(): NomadConfig {
@@ -68,6 +78,16 @@ export function loadConfig(): NomadConfig {
         imperialSubject: envString('NOMAD_IMPERIAL_SUBJECT', 'Nomad Sovereign Channel'),
         requireAllowlist: process.env.NOMAD_REQUIRE_ALLOWLIST === 'true' || (!devMode && process.env.NOMAD_ALLOWLIST_OPEN !== 'true'),
         devMode,
+        chaosModeEnabled: process.env.NOMAD_CHAOS_MODE !== 'false',
+        chaosJitterMs: envInt('NOMAD_CHAOS_JITTER_MS', 40, 0),
+        gatewayPort: envInt('NOMAD_GATEWAY_PORT', 8080),
+        consolePort: envInt('NOMAD_CONSOLE_PORT', 8081),
+        gatewayMaxBodyBytes: envInt('NOMAD_GATEWAY_MAX_BODY_BYTES', 65_536),
+        consoleMfaRequired: process.env.NOMAD_CONSOLE_MFA !== 'false',
+        consoleSessionTtlMs: envInt('NOMAD_CONSOLE_SESSION_TTL_MS', 900_000),
+        vaultDir: envString('NOMAD_VAULT_DIR', './nomad-vault'),
+        dbVaultKeyPath: process.env.NOMAD_DB_VAULT_KEY_PATH?.trim() || null,
+        fileVaultKeyPath: process.env.NOMAD_FILE_VAULT_KEY_PATH?.trim() || null,
     };
 }
 

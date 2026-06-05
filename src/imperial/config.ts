@@ -5,6 +5,7 @@ export function imperialConfigFromNomad(config: NomadConfig): ImperialCipherConf
     return {
         enabled: config.imperialCipherEnabled,
         occultVeilEnabled: config.occultVeilEnabled,
+        chaosModeEnabled: config.chaosModeEnabled,
         subject: config.imperialSubject,
     };
 }

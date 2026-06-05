@@ -1,0 +1,36 @@
+{
+  "description": "Nomad Sovereign Stack — Cloudflare WAF + DDoS rules",
+  "rules": [
+    {
+      "name": "Block OWASP SQLi",
+      "expression": "(http.request.uri.query contains \"union select\") or (http.request.uri.query contains \"drop table\")",
+      "action": "block"
+    },
+    {
+      "name": "Block path traversal",
+      "expression": "http.request.uri.path contains \"../\"",
+      "action": "block"
+    },
+    {
+      "name": "Rate limit API",
+      "expression": "http.host eq \"api.example.com\"",
+      "action": "rate_limit",
+      "ratelimit": { "requests_per_period": 100, "period": 60 }
+    },
+    {
+      "name": "Challenge suspicious bots",
+      "expression": "cf.bot_management.score lt 30",
+      "action": "managed_challenge"
+    },
+    {
+      "name": "Strict console",
+      "expression": "http.host eq \"admin.example.com\"",
+      "action": "rate_limit",
+      "ratelimit": { "requests_per_period": 20, "period": 60 }
+    }
+  ],
+  "ddos": {
+    "sensitivity": "high",
+    "ai_l7_attack_detection": true
+  }
+}

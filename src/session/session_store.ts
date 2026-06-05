@@ -65,6 +65,10 @@ export class SessionStore {
                 return null;
             }
             if (consume) {
+                if (this.consumedTickets.size >= 50_000) {
+                    const oldest = this.consumedTickets.values().next().value;
+                    if (oldest) this.consumedTickets.delete(oldest);
+                }
                 this.consumedTickets.add(ticket);
             }
             return payload;

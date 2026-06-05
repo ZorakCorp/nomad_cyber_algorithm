@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
+    "start:sovereign": "node dist/sovereign_main.js",
     "test": "npm run build && node dist/tests/run_all.js",
     "test:protocol": "npm run build && node dist/tests/protocol.test.js",
     "test:fuzz": "npm run build && node dist/tests/fuzz.test.js",

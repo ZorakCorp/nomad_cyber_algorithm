@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      containers:
+        - name: sovereign
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["node", "dist/sovereign_main.js"]
+          ports:
+            - containerPort: {{ .Values.pqc.port }}
+              name: pqc
+            - containerPort: {{ .Values.gateway.port }}
+              name: gateway
+            - containerPort: {{ .Values.console.port }}
+              name: console
+          env:
+            - name: NOMAD_CHAOS_MODE
+              value: "{{ .Values.pqc.chaosMode }}"
+            - name: NOMAD_CHAOS_JITTER_MS
+              value: "{{ .Values.pqc.chaosJitterMs }}"
+            - name: NOMAD_PORT
+              value: "{{ .Values.pqc.port }}"
+            - name: NOMAD_GATEWAY_PORT
+              value: "{{ .Values.gateway.port }}"
+            - name: NOMAD_CONSOLE_PORT
+              value: "{{ .Values.console.port }}"
+            - name: NOMAD_CONSOLE_MFA
+              value: "{{ .Values.console.mfaRequired }}"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.sidecar.enabled }}
+        - name: pqc-sidecar
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["node", "dist/sidecar_main.js"]
+          ports:
+            - containerPort: {{ .Values.sidecar.listenPort }}
+              name: sidecar
+          env:
+            - name: NOMAD_SIDECAR_PORT
+              value: "{{ .Values.sidecar.listenPort }}"
+            - name: NOMAD_SIDECAR_UPSTREAM_PORT
+              value: "{{ .Values.pqc.port }}"
+        {{- end }}

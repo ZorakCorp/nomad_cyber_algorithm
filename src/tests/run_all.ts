@@ -8,6 +8,8 @@ const tests = [
     'session.test.js',
     'imperial.test.js',
     'security_audit.test.js',
+    'chaos.test.js',
+    'live_integration.test.js',
 ];
 
 let failed = false;

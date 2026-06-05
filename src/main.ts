@@ -7,7 +7,8 @@ async function runPQC_MicroserviceDemo() {
     const config = loadConfig();
     console.log('--- Nomad Cyber Algorithm — Imperial PQC + Aureon Occult Veil Demo ---\n');
     console.log(`[AUREON] Imperial cipher doctrine loaded: ${IMPERIAL_CIPHER_CORPUS.length} civilizational mappings`);
-    console.log(`[AUREON] Layers active: Greek Scytale, Roman Augustan, Persian Seal, Egyptian Cartouche, Occult Veil\n`);
+    console.log(`[AUREON] Layers active: Greek Scytale, Roman Augustan, Persian Seal, Egyptian Cartouche, Occult Veil`);
+    console.log(`[CHAOS] Unpredictable cipher mode: ${config.chaosModeEnabled ? 'ACTIVE (no wire patterns)' : 'off'}\n`);
 
     const server = new PQCServerService(config);
     server.getRouter().register('nightingale', async (body) => {

@@ -33,6 +33,7 @@ import { HealthServer } from './ops/health_server';
 import { frameMessage, parseMessages, configureFraming } from './utils';
 import { imperialConfigFromNomad } from './imperial/config';
 import { MessageQueue } from './utils/message_queue';
+import { jitteredDelay } from './chaos/timing_veil';
 
 class PQCConnection {
     private clientSigPublicKey: Uint8Array | null = null;
@@ -99,7 +100,6 @@ class PQCConnection {
         this.socket.end();
         this.clearHandshakeTimer();
         this.heartbeat.stop();
-        this.onClose();
     }
 
     private sendHandshakeError(reason: string, code: string): void {
@@ -146,7 +146,10 @@ class PQCConnection {
             try {
                 this.receivedBuffer = Buffer.concat([this.receivedBuffer, data]);
                 this.receivedBuffer = parseMessages(this.receivedBuffer, (message) => {
-                    this.messageQueue.enqueue(() => this.processMessage(message));
+                    this.messageQueue.enqueue(
+                        () => this.processMessage(message),
+                        (err) => this.fail(err instanceof Error ? err.message : String(err), 'MESSAGE_ERROR')
+                    );
                 });
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -436,6 +439,9 @@ class PQCConnection {
         this.audit.record('message_decrypted', { correlationId: this.correlationId ?? undefined, detail: record.recordType });
 
         const responseBody = await this.router.route(record.serviceId, record.body, this.correlationId!);
+        if (this.config.chaosModeEnabled && this.config.chaosJitterMs > 0) {
+            await jitteredDelay(this.config.chaosJitterMs, parsed.sequence, this.correlationId!);
+        }
         this.sendSequence++;
         const imperialTs = parsed.timestamp ?? Date.now();
         const sealed = this.recordLayer.seal(this.aesKey, {
@@ -484,10 +490,15 @@ export class PQCServerService {
 
     private server: net.Server | null = null;
 
-    constructor(private config: NomadConfig = loadConfig()) {
+    constructor(
+        private config: NomadConfig = loadConfig(),
+        deps?: { audit?: AuditLog; metrics?: MetricsCollector }
+    ) {
         configureFraming(this.config);
         this.crypto = new CryptoService(this.config.algorithmSuite);
         this.logger = new StructuredLogger(this.config.logLevel);
+        if (deps?.audit) this.audit = deps.audit;
+        if (deps?.metrics) this.metrics = deps.metrics;
         this.qsCa = new QuantumSafeCA(this.crypto);
         createKeyStore(this.crypto, this.config.hsmEnabled);
         this.kemRotation = new KeyRotationManager(this.crypto, 'server-kem');
@@ -547,8 +558,12 @@ export class PQCServerService {
                 return;
             }
 
+            let connectionReleased = false;
             const releaseConnection = () => {
-                this.rateLimiter.releaseConnection();
+                if (!connectionReleased) {
+                    connectionReleased = true;
+                    this.rateLimiter.releaseConnection();
+                }
             };
             const releaseHandshake = () => {
                 this.rateLimiter.releaseHandshake();
@@ -602,5 +617,10 @@ export class PQCServerService {
 
     getAuditLog() {
         return this.audit.query();
+    }
+
+    rotateKeys(): void {
+        this.kemRotation.rotate();
+        this.audit.record('key_rotated', { detail: 'server-kem' });
     }
 }

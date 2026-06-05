@@ -2,22 +2,24 @@
 
 # ◈ NOMAD CYBER ALGORITHM
 
-### Post-Quantum Microservice Communication Layer
+### Post-Quantum Sovereign Security Stack
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![PQC](https://img.shields.io/badge/Quantum--Safe-Kyber768%20%2B%20Dilithium3-7C3AED?style=for-the-badge)](https://openquantumsafe.org/)
+[![Tests](https://img.shields.io/badge/Tests-38%20passing-22C55E?style=for-the-badge)](src/tests/)
 [![License](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge)](LICENSE)
 
-**Quantum-resistant TCP microservice handshake · Mutual authentication · Encrypted payload channel**
+**Quantum-resistant microservice mesh · Chaos cipher (no wire patterns) · Full security perimeter**
 
 <br/>
 
 ```
-╔══════════════════════════════════════════════════════════════════╗
-║  KYBER768 KEM  ──►  Shared Secret  ──►  AES-256-CBC Channel     ║
-║  DILITHIUM3 SIG ──►  Mutual Auth   ──►  Certificate Validation  ║
-╚══════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════╗
+║  KYBER768 KEM  →  QS-CA Identity  →  Imperial Cipher Stack  →  GCM    ║
+║  DILITHIUM3 SIG →  Allowlist + Replay Guard  →  Chaos Mode (no pattern) ║
+║  Gateway + Console MFA  →  DB/File Vaults  →  WAF + Helm deployment    ║
+╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
 <br/>
@@ -25,9 +27,10 @@
 [Overview](#-overview) ·
 [Architecture](#-architecture) ·
 [Quick Start](#-quick-start) ·
-[Protocol](#-protocol-flow) ·
-[Stack](#-crypto-stack) ·
-[Credits](#-built-by)
+[Security](#-security-model) ·
+[Chaos Mode](#-chaos-mode) ·
+[Configuration](#-configuration) ·
+[Tests](#-tests)
 
 </div>
 
@@ -35,49 +38,68 @@
 
 ## ◇ Overview
 
-**Nomad Cyber Algorithm** is a TypeScript reference implementation for **post-quantum cryptography (PQC)** in microservice-to-microservice communication. It demonstrates how two services can establish a quantum-resistant secure channel over raw TCP — without relying on classical TLS alone.
+**Nomad Cyber Algorithm** is a TypeScript post-quantum cryptography (PQC) stack for securing microservice communication and sensitive data. It combines:
 
-Designed for high-assurance environments: air-gapped networks, SCI/TS workloads, and forward-looking security architectures that must survive the post-quantum threat model.
+- **Kyber768** key encapsulation and **Dilithium3** signatures
+- **QS-CA** certificate pinning with mutual authentication
+- **Imperial cipher stack** (7 historical layers) + **Aureon occult veil**
+- **Chaos mode** — per-message unpredictable layer order, padding, and timing jitter
+- **Sovereign stack** — API gateway, MFA console, DB field encryption, file vault
+- **Edge templates** — nginx WAF and Cloudflare rules, Kubernetes Helm chart
+
+Designed for high-assurance environments: air-gapped networks, SCI/TS workloads, and forward-looking post-quantum architectures.
 
 | Capability | Implementation |
 |:---|:---|
 | **Key Exchange** | Kyber768 (ML-KEM) via OQS |
-| **Authentication** | Dilithium3 (ML-DSA) signatures |
-| **Data Channel** | AES-256-CBC + scrypt key derivation |
-| **Transport** | Length-prefixed TCP framing |
-| **Runtime** | Node.js · TypeScript · Strict mode |
+| **Authentication** | Dilithium3 + QS-CA cert verification |
+| **Data Channel** | Imperial cipher → AES-256-GCM + HKDF |
+| **Unpredictability** | Chaos padding, layer shuffle, timing veil |
+| **Perimeter** | Gateway RBAC, console MFA, rate limits |
+| **Data at Rest** | DB field vault + encrypted file vault |
+| **Transport** | Length-prefixed TCP framing + optional sidecar |
 
 ---
 
 ## ◇ Architecture
 
 ```mermaid
-sequenceDiagram
-    participant C as PQC Client
-    participant S as PQC Server
-
-    C->>S: client_hello
-    S->>C: server_hello (KEM + SIG keys, certificate)
-    Note over C: Verify Dilithium certificate
-    Note over C: Kyber encapsulate → shared secret
-    C->>S: client_auth_response (ciphertext + signature)
-    Note over S: Verify client signature
-    Note over S: Kyber decapsulate → shared secret
-    S->>C: server_auth_response (signature)
-    Note over C,S: AES-256 channel established
-    C->>S: encrypted_data
-    S->>C: encrypted_data (response)
+flowchart TB
+    subgraph edge [Edge Perimeter]
+        WAF[WAF / DDoS Rules]
+        GW[API Gateway :8080]
+        CON[Console :8081 MFA]
+    end
+    subgraph core [PQC Core :8443]
+        HS[Kyber768 + Dilithium3 Handshake]
+        CHAOS[Chaos Cipher Engine]
+        IMP[Imperial 7-Layer Stack]
+        GCM[AES-256-GCM Records]
+    end
+    subgraph data [Data Protection]
+        DBV[DB Field Vault]
+        FV[File Vault]
+    end
+    WAF --> GW
+    WAF --> CON
+    GW --> HS
+    CON -->|session token| GW
+    HS --> CHAOS --> IMP --> GCM
+    GW --> DBV
+    GW --> FV
 ```
 
-```
-┌─────────────────┐         TCP :8443          ┌─────────────────┐
-│  PQCClientService│ ◄────────────────────────► │ PQCServerService │
-│                 │                            │                 │
-│  Kyber768 (ephemeral)                        │  Kyber768       │
-│  Dilithium3 (identity)                       │  Dilithium3     │
-│  AES-256-CBC                                 │  AES-256-CBC    │
-└─────────────────┘                            └─────────────────┘
-```
+### Handshake Flow
+
+| Step | Actor | Action |
+|:---:|:---|:---|
+| 1 | Client | `client_hello` or `session_resume` (signed proof) |
+| 2 | Server | `server_hello` — pinned KEM + fresh QS-CA cert |
+| 3 | Client | Verify cert matches hello keys; Kyber encapsulate |
+| 4 | Client | `client_auth_response` — ciphertext + Dilithium signature |
+| 5 | Server | Verify signature, allowlist check, decapsulate |
+| 6 | Server | `server_auth_response` — signed + session ticket |
+| 7 | Both | `encrypted_data` with strict sequence +1, chaos cipher, GCM |
 
 ---
 
@@ -87,7 +109,6 @@ sequenceDiagram
 
 - **Node.js** 20+
 - **npm** 10+
-- Native build toolchain (required by `@open-quantum-safe/oqs-javascript`)
 
 ### Install & Run
 
@@ -96,53 +117,108 @@ git clone https://github.com/ZorakCorp/nomad_cyber_algorithm.git
 cd nomad_cyber_algorithm
 npm install
 npm run build
+
+# PQC microservice demo (chaos mode on)
 npm start
+
+# Full sovereign stack (gateway + console + vaults + PQC)
+npm run start:sovereign
 ```
 
 ### Expected Output
 
 ```
---- PQC-Secured Microservice Communication Demo (TypeScript) ---
-[SERVER] Listening on port 8443
-[CLIENT] Connected to server at localhost:8443
-[CLIENT] Server certificate verified (Dilithium3). Authenticated server.
-[CLIENT] Shared secret encapsulated. AES key derived: ...
-[SERVER] Client signature verified (Dilithium3). Client authenticated.
-[DEMO] PQC Handshake successful. Secure channel is ready for application data.
+[CHAOS] Unpredictable cipher mode: ACTIVE (no wire patterns)
+[DEMO] Session ticket issued (...). Resumption-ready.
+[DEMO] Server metrics: { "handshakesSucceeded": 1, ... }
 ```
 
 ---
 
-## ◇ Protocol Flow
+## ◇ Security Model
 
-| Step | Actor | Message | Action |
-|:---:|:---|:---|:---|
-| 1 | Client | `client_hello` | Initiate handshake |
-| 2 | Server | `server_hello` | Send KEM/SIG keys + PQC certificate |
-| 3 | Client | — | Verify server cert (Dilithium3) |
-| 4 | Client | — | Kyber encapsulate shared secret |
-| 5 | Client | `client_auth_response` | Send ciphertext + signed identity |
-| 6 | Server | — | Verify client signature + decapsulate |
-| 7 | Server | `server_auth_response` | Confirm handshake with signature |
-| 8 | Both | `encrypted_data` | AES-256-CBC application payloads |
+### Defense in Depth
+
+| Layer | Protection |
+|:---|:---|
+| **Edge WAF** | DDoS rate limits, SQLi/path traversal blocks (`deploy/waf/`) |
+| **API Gateway** | RBAC, body size limits, security headers, session auth |
+| **Console** | scrypt passwords, RFC 6238 TOTP MFA, rate-limited MFA attempts |
+| **PQC Handshake** | QS-CA cert pin, allowlist, replay guard, rate limits |
+| **Record Layer** | AES-256-GCM with AAD (`correlationId:sequence:recordType`) |
+| **Session Tickets** | AES-GCM encrypted, HMAC-sealed, one-time consume |
+| **DB Vault** | Per-field AES-256-GCM with tenant-bound AAD |
+| **File Vault** | AES-256-GCM at rest, object ID validation, owner check |
+
+### Production Checklist
+
+```bash
+# Required for production (dev mode OFF)
+NOMAD_DEV_MODE=false
+NOMAD_CONSOLE_ADMIN_PASSWORD=<strong-password>
+NOMAD_CONSOLE_ADMIN_TOTP=<base32-secret>
+NOMAD_DB_VAULT_KEY_PATH=/secrets/db-vault.key    # 64 hex chars
+NOMAD_FILE_VAULT_KEY_PATH=/secrets/file-vault.key
+NOMAD_QS_CA_ROOT_PATH=/secrets/qs-ca-root.b64
+NOMAD_CLIENT_ALLOWLIST=<base64-dilithium-pubkeys>
+```
+
+> **Note:** `@open-quantum-safe/oqs-javascript` ships as a local stub at `vendor/oqs-javascript/`. Replace with real liboqs bindings for production PQC.
 
 ---
 
-## ◇ Crypto Stack
+## ◇ Chaos Mode
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  APPLICATION LAYER     JSON messages · hex-encoded cipher  │
-├──────────────────────────────────────────────────────────────┤
-│  SYMMETRIC LAYER       AES-256-CBC · scrypt KDF · random IV │
-├──────────────────────────────────────────────────────────────┤
-│  PQC LAYER             Kyber768 (KEM) · Dilithium3 (SIG)   │
-├──────────────────────────────────────────────────────────────┤
-│  TRANSPORT LAYER       TCP · 4-byte length-prefixed frames │
-└──────────────────────────────────────────────────────────────┘
+Chaos mode eliminates predictable wire patterns — every message looks different even with identical plaintext.
+
+| Mechanism | Effect |
+|:---|:---|
+| **Layer shuffle** | Hieroglyph / Augustan / Scytale order changes per message (key-derived) |
+| **Chaotic padding** | 16–272 byte random prefix + 8–128 byte suffix (CSPRNG) |
+| **Per-message keys** | Layer keys and scytale diameter vary by sequence + timestamp |
+| **Chaos fingerprint** | 8-byte HMAC tag — tamper detection |
+| **Timing jitter** | Server responses delayed 0–40ms — defeats traffic analysis |
+
+```bash
+NOMAD_CHAOS_MODE=true        # default ON
+NOMAD_CHAOS_JITTER_MS=40     # response timing noise
 ```
 
-> **Note:** This is a **research demonstration**. Production deployments should use a Quantum-Safe CA, formal key management, authenticated encryption (e.g. AES-GCM), and hardened operational controls.
+---
+
+## ◇ Configuration
+
+| Variable | Default | Description |
+|:---|:---|:---|
+| `NOMAD_PORT` | `8443` | PQC TCP server port |
+| `NOMAD_GATEWAY_PORT` | `8080` | HTTP API gateway |
+| `NOMAD_CONSOLE_PORT` | `8081` | Admin console |
+| `NOMAD_HEALTH_PORT` | `9090` | Health/metrics endpoint |
+| `NOMAD_CHAOS_MODE` | `true` | Unpredictable cipher mode |
+| `NOMAD_DEV_MODE` | `false` | Allows dev credentials + ephemeral vault keys |
+| `NOMAD_IMPERIAL_CIPHER` | `true` | Imperial cipher stack |
+| `NOMAD_OCCULT_VEIL` | `true` | Aureon planetary epoch veil |
+| `NOMAD_REQUIRE_ALLOWLIST` | auto | Fail-closed client allowlist |
+| `NOMAD_VAULT_DIR` | `./nomad-vault` | Encrypted file storage |
+
+---
+
+## ◇ Tests
+
+```bash
+npm test    # 38 tests: protocol, fuzz, imperial, chaos, security audit, live integration
+```
+
+| Suite | Tests | Coverage |
+|:---|:---:|:---|
+| `protocol.test` | 9 | Wire format, replay guard, rate limits |
+| `fuzz.test` | 3 | Random frame safety |
+| `imperial.test` | 7 | Cipher stack round-trips |
+| `chaos.test` | 5 | Padding, shuffle, no-pattern ciphertext |
+| `security_audit.test` | 6 | Allowlist, tickets, replay cap |
+| `live_integration.test` | 2 | Live HTTP + PQC end-to-end |
+| `session.test` | 3 | Session tickets + cache |
+| `dependency_audit.test` | 3 | Supply chain allowlist |
 
 ---
 
@@ -151,13 +227,49 @@ npm start
 ```
 nomad_cyber_algorithm/
 ├── src/
-│   ├── main.ts                 # Demo entry point
-│   ├── pqc_client_service.ts   # Client handshake + encryption
-│   ├── pqc_server_service.ts   # Server handshake + decryption
-│   └── utils.ts                # TCP message framing
-├── package.json
-├── tsconfig.json
-└── README.md
+│   ├── main.ts                  # PQC demo
+│   ├── sovereign_main.ts        # Full stack demo
+│   ├── sovereign_stack.ts       # Gateway + console + vaults + PQC
+│   ├── pqc_client_service.ts    # PQC client
+│   ├── pqc_server_service.ts    # PQC server
+│   ├── chaos/                   # Entropy engine, timing veil
+│   ├── imperial/                # 7-layer cipher stack
+│   ├── occult/                  # Aureon planetary veil
+│   ├── gateway/                 # API gateway + RBAC
+│   ├── console/                 # MFA admin console
+│   ├── data/                    # DB field vault
+│   ├── vault/                   # File vault
+│   ├── crypto/                  # PQC, GCM, QS-CA
+│   ├── security/                # Replay, rate limit, allowlist
+│   └── tests/                   # 38 tests incl. live integration
+├── deploy/
+│   ├── waf/                     # nginx + Cloudflare rules
+│   └── helm/nomad-cyber/        # Kubernetes chart
+└── vendor/oqs-javascript/       # OQS stub (replace for prod)
+```
+
+---
+
+## ◇ Deployment
+
+### Edge WAF
+
+```bash
+# nginx — see deploy/waf/nginx-waf.conf
+# Cloudflare — import deploy/waf/cloudflare-rules.json
+```
+
+### Kubernetes
+
+```bash
+helm install nomad deploy/helm/nomad-cyber/
+```
+
+### Sidecar (per-connection PQC tunnel)
+
+```bash
+npm run sidecar
+# Listens :9443, tunnels to PQC upstream via isolated sessions
 ```
 
 ---
@@ -166,32 +278,12 @@ nomad_cyber_algorithm/
 
 <div align="center">
 
-<br/>
-
 ### **#HouseOfAsher** Research & Developers
 
-### **Aureon Software** · ZANOEM
-
-### **+ Cursor**
-
-<br/>
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Research-grade PQC microservice primitives for the post-quantum era
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-<br/>
+### **Aureon Software** · ZANOEM · **+ Cursor**
 
 **ZorakCorp** · [github.com/ZorakCorp/nomad_cyber_algorithm](https://github.com/ZorakCorp/nomad_cyber_algorithm)
 
-</div>
-
----
-
-<div align="center">
-
-<sub>MIT License · Nomad Cyber Algorithm v1.0.0 · 2027</sub>
+<sub>MIT License · Nomad Cyber Algorithm v1.1.0</sub>
 
 </div>

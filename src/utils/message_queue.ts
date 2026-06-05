@@ -3,10 +3,12 @@
 export class MessageQueue {
     private chain: Promise<void> = Promise.resolve();
 
-    enqueue(handler: () => Promise<void>): void {
+    enqueue(handler: () => Promise<void>, onError: (err: unknown) => void): void {
         this.chain = this.chain
             .then(() => handler())
-            .catch(() => { /* error handled by caller via handler rejection */ });
+            .catch((err) => {
+                onError(err);
+            });
     }
 
     async drain(): Promise<void> {

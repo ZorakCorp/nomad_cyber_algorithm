@@ -1,0 +1,37 @@
+replicaCount: 2
+
+image:
+  repository: nomad-cyber-algorithm
+  tag: latest
+  pullPolicy: IfNotPresent
+
+pqc:
+  port: 8443
+  chaosMode: true
+  chaosJitterMs: 40
+
+gateway:
+  port: 8080
+  maxBodyBytes: 65536
+
+console:
+  port: 8081
+  mfaRequired: true
+
+sidecar:
+  enabled: true
+  listenPort: 9443
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+ingress:
+  enabled: true
+  hosts:
+    api: api.example.com
+    admin: admin.example.com

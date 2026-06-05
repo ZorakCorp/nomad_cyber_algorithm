@@ -20,7 +20,8 @@ export class ReplayGuard {
     validate(nonce: string, timestamp: number, correlationId: string): void {
         this.purge();
         if (this.seenNonces.size >= this.options.maxEntries) {
-            throw new Error('Replay guard capacity exceeded.');
+            const oldest = this.seenNonces.keys().next().value;
+            if (oldest) this.seenNonces.delete(oldest);
         }
         const now = Date.now();
         if (timestamp <= 0 || Math.abs(now - timestamp) > this.options.maxClockSkewMs) {
