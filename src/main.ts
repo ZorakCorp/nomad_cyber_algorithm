@@ -1,45 +1,45 @@
+import { loadConfig } from './config';
 import { PQCServerService } from './pqc_server_service';
 import { PQCClientService } from './pqc_client_service';
+import { IMPERIAL_CIPHER_CORPUS } from './imperial/research_corpus';
 
 async function runPQC_MicroserviceDemo() {
-    console.log("--- PQC-Secured Microservice Communication Demo (TypeScript) ---");
-    console.log("Demonstrates quantum-resistant key exchange (Kyber) and mutual authentication (Dilithium) ");
-    console.log("for Top Secret / SCI data within an Air-Gapped Network.\n");
+    const config = loadConfig();
+    console.log('--- Nomad Cyber Algorithm — Imperial PQC + Aureon Occult Veil Demo ---\n');
+    console.log(`[AUREON] Imperial cipher doctrine loaded: ${IMPERIAL_CIPHER_CORPUS.length} civilizational mappings`);
+    console.log(`[AUREON] Layers active: Greek Scytale, Roman Augustan, Persian Seal, Egyptian Cartouche, Occult Veil\n`);
 
-    const serverPort = 8443;
+    const server = new PQCServerService(config);
+    server.getRouter().register('nightingale', async (body) => {
+        return Buffer.from(`[nightingale] Cleared: ${body.toString('utf8').slice(0, 40)}...`);
+    });
+    server.start();
 
-    // Start the PQC Server Service
-    const serverService = new PQCServerService(serverPort);
-    serverService.start();
+    const qsCa = server.getQuantumSafeCA();
+    const client = new PQCClientService('127.0.0.1', config.port, qsCa, config);
 
-    // Give server a moment to start listening
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Start the PQC Client Service
-    const clientService = new PQCClientService('localhost', serverPort);
-    await clientService.connect();
-
-    // Wait for the PQC handshake to complete
-    console.log("\n[DEMO] Waiting for PQC handshake to complete...");
     try {
-        await clientService.waitForHandshake();
-        console.log("\n[DEMO] PQC Handshake successful. Secure channel is ready for application data.");
+        await client.connect();
+        await client.waitForHandshake();
 
-        // Send a Top Secret / SCI message from client to server
-        const secretMessage = "Access to Project Nightingale data requires Level 5 clearance. Quantum-resistant encryption validated.";
-        await clientService.sendEncryptedMessage(secretMessage);
+        const secretMessage =
+            'Access to Project Nightingale data requires Level 5 clearance. Quantum-resistant encryption validated.';
+        await client.sendEncryptedMessage(secretMessage, 'nightingale');
 
-        // Give time for server to process and respond (the server will send an encrypted response back)
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
 
+        const ticket = client.getSessionTicket();
+        if (ticket) {
+            console.log(`\n[DEMO] Session ticket issued (${ticket.slice(0, 24)}...). Resumption-ready.`);
+        }
+
+        console.log('\n[DEMO] Server metrics:', JSON.stringify(server.getMetrics(), null, 2));
     } catch (error) {
-        console.error(`\n[DEMO] PQC Handshake failed: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`\n[DEMO] Failed: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
     } finally {
-        // Clean up
-        console.log("\n[DEMO] Disconnecting client.");
-        clientService.disconnect();
-        // In a real system, server would remain running or be shut down gracefully.
-        // For this demo, we'll let Node.js exit when the server has no more active connections.
+        await client.disconnect();
+        await server.stop();
     }
 }
 
