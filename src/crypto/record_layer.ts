@@ -12,19 +12,12 @@ export interface RecordPayload {
 
 export class RecordLayer {
     private imperial: ImperialCipherStack | null = null;
+    private correlationId: string | null = null;
 
-    constructor(
-        private crypto: CryptoService,
-        imperialConfig?: ImperialCipherConfig,
-        masterKey?: Buffer,
-        correlationId?: string
-    ) {
-        if (imperialConfig?.enabled && masterKey && correlationId) {
-            this.imperial = new ImperialCipherStack(masterKey, correlationId, imperialConfig);
-        }
-    }
+    constructor(private crypto: CryptoService) {}
 
     setImperialChannel(masterKey: Buffer, correlationId: string, config: ImperialCipherConfig): void {
+        this.correlationId = correlationId;
         if (config.enabled) {
             this.imperial = new ImperialCipherStack(masterKey, correlationId, config);
         }
@@ -55,16 +48,30 @@ export class RecordLayer {
     }
 
     seal(aesKey: Buffer, payload: RecordPayload, sequence: number): EncryptedRecord {
+        if (!this.correlationId) {
+            throw new Error('RecordLayer missing correlationId');
+        }
         const ts = payload.imperialTimestamp ?? Date.now();
         let serialized = this.serialize(payload);
         if (this.imperial) {
             serialized = this.imperial.encipher(serialized, ts);
         }
-        return this.crypto.encrypt(aesKey, serialized, sequence);
+        return this.crypto.encrypt(aesKey, serialized, {
+            correlationId: this.correlationId,
+            sequence,
+            recordType: payload.recordType,
+        });
     }
 
-    open(aesKey: Buffer, record: EncryptedRecord, imperialTimestamp?: number): RecordPayload {
-        let plaintext = this.crypto.decrypt(aesKey, record);
+    open(aesKey: Buffer, record: EncryptedRecord, imperialTimestamp?: number, recordType: RecordType = 'application'): RecordPayload {
+        if (!this.correlationId) {
+            throw new Error('RecordLayer missing correlationId');
+        }
+        let plaintext = this.crypto.decrypt(aesKey, record, {
+            correlationId: this.correlationId,
+            sequence: record.sequence,
+            recordType,
+        });
         if (this.imperial) {
             plaintext = this.imperial.decipher(plaintext, imperialTimestamp ?? Date.now());
         }

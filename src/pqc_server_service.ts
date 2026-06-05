@@ -3,9 +3,9 @@ import * as net from 'net';
 import { NomadConfig, loadConfig } from './config';
 import { CryptoService } from './crypto/crypto_service';
 import { QuantumSafeCA, PQCertificate } from './crypto/qs_ca';
-import { createKeyStore, KeyStore } from './crypto/hsm_adapter';
+import { createKeyStore } from './crypto/hsm_adapter';
 import { RecordLayer } from './crypto/record_layer';
-import { KeyRotationManager } from './security/key_rotation';
+import { KeyRotationManager, RotatingKemKeys } from './security/key_rotation';
 import { ClientAllowlist } from './security/client_allowlist';
 import { RateLimiter } from './security/rate_limiter';
 import { ReplayGuard } from './security/replay_guard';
@@ -19,6 +19,7 @@ import {
     attachSecurityFields,
     buildClientAuthSignedPayload,
     buildServerAuthSignedPayload,
+    buildSessionResumeSignedPayload,
 } from './protocol';
 import { validateWireMessage } from './schema';
 import { SessionStore } from './session/session_store';
@@ -31,6 +32,7 @@ import { AuditLog } from './ops/audit_log';
 import { HealthServer } from './ops/health_server';
 import { frameMessage, parseMessages, configureFraming } from './utils';
 import { imperialConfigFromNomad } from './imperial/config';
+import { MessageQueue } from './utils/message_queue';
 
 class PQCConnection {
     private clientSigPublicKey: Uint8Array | null = null;
@@ -40,21 +42,25 @@ class PQCConnection {
     private correlationId: string | null = null;
     private handshakeTimer: NodeJS.Timeout | null = null;
     private handshakeStartedAt = 0;
+    private handshakeSucceeded = false;
+    private handshakeSlotReleased = false;
     private sendSequence = 0;
     private recvSequence = 0;
+    private pinnedKem: RotatingKemKeys | null = null;
 
     private replayGuard = new ReplayGuard();
     private heartbeat: HeartbeatManager;
     private recordLayer: RecordLayer;
+    private messageQueue = new MessageQueue();
 
     constructor(
         private socket: net.Socket,
         private crypto: CryptoService,
         private kemRotation: KeyRotationManager,
+        private qsCa: QuantumSafeCA,
         private serverSig: Signature,
         private serverSigPrivateKey: Uint8Array,
         private serverSigPublicKey: Uint8Array,
-        private serverCertificate: PQCertificate,
         private config: NomadConfig,
         private allowlist: ClientAllowlist,
         private sessionStore: SessionStore,
@@ -62,6 +68,7 @@ class PQCConnection {
         private logger: StructuredLogger,
         private metrics: MetricsCollector,
         private audit: AuditLog,
+        private onReleaseHandshake: () => void,
         private onClose: () => void,
     ) {
         this.recordLayer = new RecordLayer(crypto);
@@ -76,11 +83,19 @@ class PQCConnection {
         this.logger.info(message, { component: 'server', correlationId: this.correlationId ?? 'pending', ...extra });
     }
 
+    private releaseHandshakeSlot(): void {
+        if (!this.handshakeSlotReleased) {
+            this.handshakeSlotReleased = true;
+            this.onReleaseHandshake();
+        }
+    }
+
     private fail(reason: string, code = 'HANDSHAKE_FAILED'): void {
         this.log(`Handshake failed: ${reason}`, { code });
         this.metrics.increment('handshakesFailed');
         this.audit.record('handshake_failed', { correlationId: this.correlationId ?? undefined, detail: reason });
         this.sendHandshakeError(reason, code);
+        this.releaseHandshakeSlot();
         this.socket.end();
         this.clearHandshakeTimer();
         this.heartbeat.stop();
@@ -131,10 +146,7 @@ class PQCConnection {
             try {
                 this.receivedBuffer = Buffer.concat([this.receivedBuffer, data]);
                 this.receivedBuffer = parseMessages(this.receivedBuffer, (message) => {
-                    this.processMessage(message).catch((err) => {
-                        const msg = err instanceof Error ? err.message : String(err);
-                        this.fail(`Message processing failed: ${msg}`);
-                    });
+                    this.messageQueue.enqueue(() => this.processMessage(message));
                 });
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -144,6 +156,7 @@ class PQCConnection {
 
         this.socket.on('close', () => {
             this.log('Client disconnected');
+            this.releaseHandshakeSlot();
             this.clearHandshakeTimer();
             this.heartbeat.stop();
             this.wipeSecrets();
@@ -208,12 +221,18 @@ class PQCConnection {
         this.audit.record('handshake_started', { correlationId: this.correlationId, peer: this.socket.remoteAddress ?? undefined });
         this.startHandshakeTimer();
 
-        const activeKem = this.kemRotation.getActiveKeys();
+        this.pinnedKem = this.kemRotation.getActiveKeys();
+        const liveCert = this.qsCa.issueCertificate(
+            'nomad-server',
+            this.serverSigPublicKey,
+            this.pinnedKem.pair.publicKey
+        );
+
         const serverHello = attachSecurityFields({
             type: 'server_hello',
-            kemPublicKey: encodeBinary(activeKem.pair.publicKey),
+            kemPublicKey: encodeBinary(this.pinnedKem.pair.publicKey),
             sigPublicKey: encodeBinary(this.serverSigPublicKey),
-            certificate: this.serverCertificate,
+            certificate: liveCert,
         }, this.correlationId);
         this.socket.write(frameMessage(serializeMessage(serverHello)));
         this.phase = 'server_hello_sent';
@@ -224,14 +243,48 @@ class PQCConnection {
             this.fail('Invalid session_resume');
             return;
         }
+
+        if (!parsed.signature || !parsed.clientPublicKeySig) {
+            this.fail('session_resume missing proof-of-possession signature', 'RESUME_PROOF_MISSING');
+            return;
+        }
+
         const payload = this.sessionStore.redeem(parsed.sessionTicket);
         if (!payload) {
             this.fail('Invalid or expired session ticket', 'SESSION_EXPIRED');
             return;
         }
+
+        const clientSigPublicKey = decodeBinary(parsed.clientPublicKeySig, 'clientPublicKeySig');
+        if (encodeBinary(clientSigPublicKey) !== payload.clientSigPublicKey) {
+            this.fail('Resume client key does not match ticket', 'RESUME_KEY_MISMATCH');
+            return;
+        }
+
+        if (!this.allowlist.isAllowed(clientSigPublicKey)) {
+            this.metrics.increment('allowlistRejected');
+            this.fail('Client not on allowlist', 'ALLOWLIST_REJECTED');
+            return;
+        }
+
+        const resumeData = buildSessionResumeSignedPayload(
+            parsed.sessionTicket,
+            clientSigPublicKey,
+            payload.correlationId,
+            parsed.nonce!,
+            parsed.timestamp!
+        );
+        const resumeSig = decodeBinary(parsed.signature, 'signature');
+        if (!this.crypto.verify(this.serverSig, clientSigPublicKey, resumeData, resumeSig)) {
+            this.fail('Session resume signature verification failed', 'RESUME_SIG_INVALID');
+            return;
+        }
+
         this.correlationId = payload.correlationId;
         this.aesKey = Buffer.from(payload.aesKeyHex, 'hex');
+        this.clientSigPublicKey = clientSigPublicKey;
         this.handshakeStartedAt = Date.now();
+        this.activateImperialLayers();
 
         const serverAuth = attachSecurityFields({
             type: 'server_auth_response',
@@ -286,10 +339,10 @@ class PQCConnection {
             return;
         }
 
-        const activeKem = this.kemRotation.getActiveKeys();
+        const kemKeys = this.pinnedKem ?? this.kemRotation.getActiveKeys();
         const sharedSecret = this.crypto.decapsulate(
             this.kemRotation.getKem(),
-            activeKem.pair.privateKey,
+            kemKeys.pair.privateKey,
             encapsulatedKey
         );
         if (!sharedSecret) {
@@ -303,6 +356,7 @@ class PQCConnection {
             this.correlationId!,
             this.aesKey,
             encodeBinary(clientSigPublicKey),
+            encodeBinary(this.serverSigPublicKey),
             this.config.sessionTtlMs
         );
 
@@ -336,6 +390,7 @@ class PQCConnection {
     }
 
     private handshakeComplete(): void {
+        this.handshakeSucceeded = true;
         this.clearHandshakeTimer();
         this.activateImperialLayers();
         this.heartbeat.start((buf) => this.socket.write(buf), this.correlationId!);
@@ -355,8 +410,11 @@ class PQCConnection {
             this.fail('encrypted_data missing sequence');
             return;
         }
-        if (parsed.sequence <= this.recvSequence) {
-            this.fail('Sequence replay detected', 'SEQUENCE_REPLAY');
+        if (parsed.sequence !== this.recvSequence + 1) {
+            this.fail(
+                parsed.sequence <= this.recvSequence ? 'Sequence replay detected' : 'Sequence gap detected',
+                'SEQUENCE_ERROR'
+            );
             return;
         }
         this.recvSequence = parsed.sequence;
@@ -394,7 +452,7 @@ class PQCConnection {
             data: sealed.ciphertext.toString('hex'),
             iv: sealed.iv.toString('hex'),
             authTag: sealed.authTag.toString('hex'),
-        }, this.correlationId!);
+        }, this.correlationId!, imperialTs);
         this.socket.write(frameMessage(serializeMessage(wire)));
         this.metrics.increment('messagesEncrypted');
         this.audit.record('message_encrypted', { correlationId: this.correlationId ?? undefined });
@@ -412,7 +470,6 @@ export class PQCServerService {
     private serverSig: Signature;
     private serverSigPrivateKey: Uint8Array;
     private serverSigPublicKey: Uint8Array;
-    private serverCertificate: PQCertificate;
     private qsCa: QuantumSafeCA;
 
     private allowlist: ClientAllowlist;
@@ -434,20 +491,13 @@ export class PQCServerService {
         this.qsCa = new QuantumSafeCA(this.crypto);
         createKeyStore(this.crypto, this.config.hsmEnabled);
         this.kemRotation = new KeyRotationManager(this.crypto, 'server-kem');
-        this.allowlist = new ClientAllowlist(this.config.clientAllowlist);
+        this.allowlist = new ClientAllowlist(this.config.clientAllowlist, this.config.requireAllowlist);
         this.rateLimiter = new RateLimiter(this.config.maxConnections, this.config.maxHandshakesPerMinute);
 
         this.serverSig = this.crypto.createSig();
         const sigPair = this.crypto.generateSigKeyPair(this.serverSig);
         this.serverSigPrivateKey = sigPair.privateKey;
         this.serverSigPublicKey = sigPair.publicKey;
-
-        const activeKem = this.kemRotation.getActiveKeys();
-        this.serverCertificate = this.qsCa.issueCertificate(
-            'nomad-server',
-            this.serverSigPublicKey,
-            activeKem.pair.publicKey
-        );
 
         this.router.register('default', async (body) => {
             const text = body.toString('utf8');
@@ -474,6 +524,9 @@ export class PQCServerService {
     }
 
     start(): void {
+        if (this.config.requireAllowlist && this.allowlist.size() === 0) {
+            throw new Error('Allowlist is required but no client keys are registered or configured.');
+        }
         this.health.start();
         this.server = net.createServer((socket) => {
             if (this.shutdown.isShuttingDown()) {
@@ -494,6 +547,13 @@ export class PQCServerService {
                 return;
             }
 
+            const releaseConnection = () => {
+                this.rateLimiter.releaseConnection();
+            };
+            const releaseHandshake = () => {
+                this.rateLimiter.releaseHandshake();
+            };
+
             this.shutdown.track(socket);
             this.logger.info('Client connected', { component: 'server', peer: socket.remoteAddress ?? undefined });
 
@@ -501,10 +561,10 @@ export class PQCServerService {
                 socket,
                 this.crypto,
                 this.kemRotation,
+                this.qsCa,
                 this.serverSig,
                 this.serverSigPrivateKey,
                 this.serverSigPublicKey,
-                this.serverCertificate,
                 this.config,
                 this.allowlist,
                 this.sessionStore,
@@ -512,7 +572,8 @@ export class PQCServerService {
                 this.logger,
                 this.metrics,
                 this.audit,
-                () => this.rateLimiter.releaseConnection(),
+                releaseHandshake,
+                releaseConnection,
             );
         });
 
@@ -522,6 +583,7 @@ export class PQCServerService {
                 host: this.config.bindHost,
                 port: this.config.port,
                 healthPort: this.config.healthPort,
+                devMode: this.config.devMode,
             });
         });
     }

@@ -7,6 +7,7 @@ const tests = [
     'dependency_audit.test.js',
     'session.test.js',
     'imperial.test.js',
+    'security_audit.test.js',
 ];
 
 let failed = false;

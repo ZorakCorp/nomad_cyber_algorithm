@@ -1,5 +1,6 @@
 export class RateLimiter {
     private activeConnections = 0;
+    private activeHandshakes = 0;
     private handshakeTimestamps: number[] = [];
 
     constructor(
@@ -27,13 +28,22 @@ export class RateLimiter {
             return false;
         }
         this.handshakeTimestamps.push(now);
+        this.activeHandshakes++;
         return true;
     }
 
-    snapshot(): { activeConnections: number; handshakesLastMinute: number } {
+    releaseHandshake(): void {
+        this.activeHandshakes = Math.max(0, this.activeHandshakes - 1);
+    }
+
+    snapshot(): { activeConnections: number; handshakesLastMinute: number; activeHandshakes: number } {
         const now = Date.now();
         const windowStart = now - 60_000;
         const recent = this.handshakeTimestamps.filter((t) => t >= windowStart);
-        return { activeConnections: this.activeConnections, handshakesLastMinute: recent.length };
+        return {
+            activeConnections: this.activeConnections,
+            handshakesLastMinute: recent.length,
+            activeHandshakes: this.activeHandshakes,
+        };
     }
 }

@@ -13,10 +13,11 @@ async function runPQC_MicroserviceDemo() {
     server.getRouter().register('nightingale', async (body) => {
         return Buffer.from(`[nightingale] Cleared: ${body.toString('utf8').slice(0, 40)}...`);
     });
-    server.start();
 
     const qsCa = server.getQuantumSafeCA();
     const client = new PQCClientService('127.0.0.1', config.port, qsCa, config);
+    server.registerClient(client.getClientSigPublicKey());
+    server.start();
 
     try {
         await client.connect();

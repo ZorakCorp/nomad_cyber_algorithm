@@ -1,4 +1,6 @@
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
+
+const MAX_CARTOUCHE_HEADER = 4096;
 
 /**
  * Egyptian hieroglyph S-box + royal cartouche identity envelope.
@@ -45,7 +47,13 @@ export function wrapCartouche(data: Buffer, subject: string, correlationId: stri
 }
 
 export function unwrapCartouche(wrapped: Buffer, key: Buffer): Buffer {
+    if (wrapped.length < 2) {
+        throw new Error('Cartouche frame too short');
+    }
     const headerLen = wrapped.readUInt16BE(0);
+    if (headerLen === 0 || headerLen > MAX_CARTOUCHE_HEADER || wrapped.length < 2 + headerLen) {
+        throw new Error('Invalid cartouche header length');
+    }
     const header = JSON.parse(wrapped.subarray(2, 2 + headerLen).toString('utf8')) as {
         subject: string;
         correlationId: string;
@@ -57,8 +65,9 @@ export function unwrapCartouche(wrapped: Buffer, key: Buffer): Buffer {
         .update(header.subject)
         .update(header.correlationId)
         .update(body)
-        .digest('hex');
-    if (expected !== header.seal) {
+        .digest();
+    const sealBuf = Buffer.from(header.seal, 'hex');
+    if (sealBuf.length !== expected.length || !timingSafeEqual(sealBuf, expected)) {
         throw new Error('Cartouche seal violated — message authority invalid.');
     }
     return body;

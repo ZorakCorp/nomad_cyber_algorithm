@@ -1,15 +1,17 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { CRYPTO_CONSTANTS } from '../crypto/crypto_service';
 
 export interface SessionTicketPayload {
     correlationId: string;
     aesKeyHex: string;
     clientSigPublicKey: string;
+    serverSigPublicKey: string;
     expiresAt: number;
 }
 
 export class SessionStore {
     private masterKey: Buffer;
+    private consumedTickets = new Set<string>();
 
     constructor(masterSecret?: Buffer) {
         this.masterKey = masterSecret ?? randomBytes(32);
@@ -19,12 +21,14 @@ export class SessionStore {
         correlationId: string,
         aesKey: Buffer,
         clientSigPublicKey: string,
+        serverSigPublicKey: string,
         ttlMs: number
     ): string {
         const payload: SessionTicketPayload = {
             correlationId,
             aesKeyHex: aesKey.toString('hex'),
             clientSigPublicKey,
+            serverSigPublicKey,
             expiresAt: Date.now() + ttlMs,
         };
         const plaintext = Buffer.from(JSON.stringify(payload));
@@ -37,13 +41,17 @@ export class SessionStore {
         return Buffer.concat([mac, bundle]).toString('base64');
     }
 
-    redeem(ticket: string): SessionTicketPayload | null {
+    redeem(ticket: string, consume = true): SessionTicketPayload | null {
         try {
+            if (this.consumedTickets.has(ticket)) {
+                return null;
+            }
             const raw = Buffer.from(ticket, 'base64');
+            if (raw.length < 32) return null;
             const mac = raw.subarray(0, 32);
             const bundle = raw.subarray(32);
             const expectedMac = createHmac('sha256', this.masterKey).update(bundle).digest();
-            if (mac.compare(expectedMac) !== 0) {
+            if (mac.length !== expectedMac.length || !timingSafeEqual(mac, expectedMac)) {
                 return null;
             }
             const iv = bundle.subarray(0, CRYPTO_CONSTANTS.GCM_IV_BYTES);
@@ -55,6 +63,9 @@ export class SessionStore {
             const payload = JSON.parse(plaintext.toString('utf8')) as SessionTicketPayload;
             if (Date.now() > payload.expiresAt) {
                 return null;
+            }
+            if (consume) {
+                this.consumedTickets.add(ticket);
             }
             return payload;
         } catch {

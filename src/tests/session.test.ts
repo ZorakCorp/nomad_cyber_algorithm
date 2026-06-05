@@ -8,18 +8,19 @@ const tests: TestCase[] = [
         fn: () => {
             const store = new SessionStore();
             const key = Buffer.alloc(32, 7);
-            const ticket = store.issue('corr-1', key, 'clientpk', 60_000);
+            const ticket = store.issue('corr-1', key, 'clientpk', 'serverpk', 60_000);
             const payload = store.redeem(ticket);
             assert(!!payload, 'redeemed');
             assert(payload!.correlationId === 'corr-1', 'correlation');
             assert(payload!.aesKeyHex === key.toString('hex'), 'key');
+            assert(payload!.serverSigPublicKey === 'serverpk', 'server pk');
         },
     },
     {
         name: 'session store rejects tampered ticket',
         fn: () => {
             const store = new SessionStore();
-            const ticket = store.issue('c', Buffer.alloc(32), 'pk', 60_000);
+            const ticket = store.issue('c', Buffer.alloc(32), 'pk', 'spk', 60_000);
             const tampered = ticket.slice(0, -4) + 'AAAA';
             assert(store.redeem(tampered) === null, 'tampered');
         },
@@ -29,7 +30,7 @@ const tests: TestCase[] = [
         fn: () => {
             const cache = new ClientSessionCache();
             const key = Buffer.alloc(32, 1);
-            cache.save('t1', key, 'c1');
+            cache.save('t1', key, 'c1', 's1');
             assert(!!cache.load('t1', 60_000), 'fresh');
             assert(cache.load('t1', -1) === null, 'expired');
         },

@@ -1,6 +1,7 @@
 export interface ReplayGuardOptions {
     maxClockSkewMs: number;
     nonceTtlMs: number;
+    maxEntries: number;
 }
 
 interface NonceEntry {
@@ -10,12 +11,19 @@ interface NonceEntry {
 export class ReplayGuard {
     private seenNonces = new Map<string, NonceEntry>();
 
-    constructor(private options: ReplayGuardOptions = { maxClockSkewMs: 60_000, nonceTtlMs: 120_000 }) {}
+    constructor(private options: ReplayGuardOptions = {
+        maxClockSkewMs: 60_000,
+        nonceTtlMs: 120_000,
+        maxEntries: 10_000,
+    }) {}
 
     validate(nonce: string, timestamp: number, correlationId: string): void {
         this.purge();
+        if (this.seenNonces.size >= this.options.maxEntries) {
+            throw new Error('Replay guard capacity exceeded.');
+        }
         const now = Date.now();
-        if (Math.abs(now - timestamp) > this.options.maxClockSkewMs) {
+        if (timestamp <= 0 || Math.abs(now - timestamp) > this.options.maxClockSkewMs) {
             throw new Error('Message timestamp outside allowed clock skew window.');
         }
         const key = `${correlationId}:${nonce}`;

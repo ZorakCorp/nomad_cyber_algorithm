@@ -70,7 +70,7 @@ const tests: TestCase[] = [
     {
         name: 'replay guard rejects stale timestamp',
         fn: () => {
-            const guard = new ReplayGuard({ maxClockSkewMs: 1000, nonceTtlMs: 5000 });
+            const guard = new ReplayGuard({ maxClockSkewMs: 1000, nonceTtlMs: 5000, maxEntries: 1000 });
             assertThrows(() => guard.validate('n2', Date.now() - 60_000, 'c1'));
         },
     },

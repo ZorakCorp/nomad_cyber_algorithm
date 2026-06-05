@@ -131,6 +131,23 @@ export function buildClientAuthSignedPayload(
     }));
 }
 
+export function buildSessionResumeSignedPayload(
+    sessionTicket: string,
+    clientPublicKeySig: Uint8Array,
+    correlationId: string,
+    nonce: string,
+    timestamp: number
+): Buffer {
+    return Buffer.from(JSON.stringify({
+        action: 'session_resume',
+        sessionTicket,
+        clientPublicKeySig: encodeBinary(clientPublicKeySig),
+        correlationId,
+        nonce,
+        timestamp,
+    }));
+}
+
 export function buildServerAuthSignedPayload(
     serverPublicKeySig: Uint8Array,
     correlationId: string,

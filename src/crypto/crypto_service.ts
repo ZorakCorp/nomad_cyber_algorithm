@@ -8,7 +8,14 @@ export const CRYPTO_CONSTANTS = {
     GCM_IV_BYTES: 12,
     GCM_AUTH_TAG_BYTES: 16,
     HKDF_INFO: 'nomad-pqc-channel-v1',
+    HKDF_SALT: 'nomad-pqc-channel-salt-v1',
 } as const;
+
+export interface AadContext {
+    correlationId: string;
+    sequence: number;
+    recordType?: string;
+}
 
 export interface KemKeyPair {
     publicKey: Uint8Array;
@@ -70,24 +77,28 @@ export class CryptoService {
 
     deriveChannelKey(sharedSecret: Uint8Array, correlationId: string): Buffer {
         const info = `${CRYPTO_CONSTANTS.HKDF_INFO}:${correlationId}`;
-        const key = Buffer.from(hkdfSync('sha256', Buffer.from(sharedSecret), '', info, CRYPTO_CONSTANTS.AES_KEY_BYTES));
+        const salt = Buffer.from(CRYPTO_CONSTANTS.HKDF_SALT);
+        const key = Buffer.from(hkdfSync('sha256', Buffer.from(sharedSecret), salt, info, CRYPTO_CONSTANTS.AES_KEY_BYTES));
         secureZero(sharedSecret);
         return key;
     }
 
-    encrypt(aesKey: Buffer, plaintext: Buffer, sequence: number): EncryptedRecord {
-        const iv = randomBytes(CRYPTO_CONSTANTS.GCM_IV_BYTES);
-        const aad = Buffer.from(sequence.toString());
-        const cipher = createCipheriv('aes-256-gcm', aesKey, iv, { authTagLength: CRYPTO_CONSTANTS.GCM_AUTH_TAG_BYTES });
-        cipher.setAAD(aad);
-        const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        return { ciphertext, iv, authTag: cipher.getAuthTag(), sequence };
+    private buildAad(ctx: AadContext): Buffer {
+        const type = ctx.recordType ?? 'application';
+        return Buffer.from(`${ctx.correlationId}:${ctx.sequence}:${type}`);
     }
 
-    decrypt(aesKey: Buffer, record: EncryptedRecord): Buffer {
-        const aad = Buffer.from(record.sequence.toString());
+    encrypt(aesKey: Buffer, plaintext: Buffer, aadContext: AadContext): EncryptedRecord {
+        const iv = randomBytes(CRYPTO_CONSTANTS.GCM_IV_BYTES);
+        const cipher = createCipheriv('aes-256-gcm', aesKey, iv, { authTagLength: CRYPTO_CONSTANTS.GCM_AUTH_TAG_BYTES });
+        cipher.setAAD(this.buildAad(aadContext));
+        const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+        return { ciphertext, iv, authTag: cipher.getAuthTag(), sequence: aadContext.sequence };
+    }
+
+    decrypt(aesKey: Buffer, record: EncryptedRecord, aadContext: AadContext): Buffer {
         const decipher = createDecipheriv('aes-256-gcm', aesKey, record.iv, { authTagLength: CRYPTO_CONSTANTS.GCM_AUTH_TAG_BYTES });
-        decipher.setAAD(aad);
+        decipher.setAAD(this.buildAad(aadContext));
         decipher.setAuthTag(record.authTag);
         return Buffer.concat([decipher.update(record.ciphertext), decipher.final()]);
     }

@@ -1,11 +1,12 @@
 import * as net from 'net';
 import { PQCClientService } from '../pqc_client_service';
 import { NomadConfig } from '../config';
+import { QuantumSafeCA } from '../crypto/qs_ca';
 import { StructuredLogger } from '../ops/logger';
 
 /**
- * Transparent TCP sidecar: accepts local plaintext connections and
- * forwards payloads through an established PQC client channel.
+ * Transparent TCP sidecar: accepts local connections and forwards raw bytes
+ * through an established PQC client channel; encrypted responses are written back.
  */
 export class PQCSidecar {
     private server: net.Server | null = null;
@@ -15,19 +16,33 @@ export class PQCSidecar {
         private listenPort: number,
         private upstreamHost: string,
         private upstreamPort: number,
+        private qsCa: QuantumSafeCA,
         private config: NomadConfig,
         private logger: StructuredLogger
     ) {}
 
     async start(): Promise<void> {
-        this.client = new PQCClientService(this.upstreamHost, this.upstreamPort, undefined, this.config);
+        if (!this.qsCa) {
+            throw new Error('QS-CA is required for sidecar upstream trust.');
+        }
+
+        this.client = new PQCClientService(this.upstreamHost, this.upstreamPort, this.qsCa, this.config);
         await this.client.connect();
         await this.client.waitForHandshake();
 
         this.server = net.createServer((localSocket) => {
+            let localClosed = false;
+
+            this.client!.setApplicationResponseHandler((body, serviceId) => {
+                if (localClosed) return;
+                if (serviceId === 'sidecar') {
+                    localSocket.write(body);
+                }
+            });
+
             localSocket.on('data', async (chunk) => {
                 try {
-                    await this.client!.sendRaw(Buffer.from(chunk.toString('utf8')), 'sidecar');
+                    await this.client!.sendRaw(Buffer.from(chunk), 'sidecar');
                 } catch (err) {
                     this.logger.error('Sidecar forward failed', {
                         component: 'sidecar',
@@ -35,6 +50,17 @@ export class PQCSidecar {
                     });
                     localSocket.end();
                 }
+            });
+
+            localSocket.on('close', () => {
+                localClosed = true;
+            });
+
+            localSocket.on('error', (err) => {
+                this.logger.error('Sidecar local socket error', {
+                    component: 'sidecar',
+                    error: err.message,
+                });
             });
         });
 
@@ -44,7 +70,7 @@ export class PQCSidecar {
     }
 
     async stop(): Promise<void> {
-        this.client?.disconnect();
+        await this.client?.disconnect();
         this.server?.close();
     }
 }

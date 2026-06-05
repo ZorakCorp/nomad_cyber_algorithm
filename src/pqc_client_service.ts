@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import * as net from 'net';
 import { NomadConfig, loadConfig } from './config';
 import { CryptoService } from './crypto/crypto_service';
+import { verifyServerHelloIdentity } from './crypto/cert_verify';
 import { QuantumSafeCA, PQCertificate } from './crypto/qs_ca';
 import { RecordLayer } from './crypto/record_layer';
 import { imperialConfigFromNomad } from './imperial/config';
@@ -16,6 +17,7 @@ import {
     attachSecurityFields,
     buildClientAuthSignedPayload,
     buildServerAuthSignedPayload,
+    buildSessionResumeSignedPayload,
 } from './protocol';
 import { ClientSessionCache } from './session/client_session_cache';
 import { validateWireMessage } from './schema';
@@ -23,6 +25,7 @@ import { ReplayGuard } from './security/replay_guard';
 import { HeartbeatManager } from './session/heartbeat';
 import { StructuredLogger } from './ops/logger';
 import { frameMessage, parseMessages, configureFraming } from './utils';
+import { MessageQueue } from './utils/message_queue';
 
 export class PQCClientService {
     private crypto: CryptoService;
@@ -34,6 +37,7 @@ export class PQCClientService {
 
     private serverKemPublicKey: Uint8Array | null = null;
     private serverSigPublicKey: Uint8Array | null = null;
+    private pinnedServerSigPublicKey: string | null = null;
 
     private aesKey: Buffer | null = null;
     private sendSequence = 0;
@@ -43,6 +47,7 @@ export class PQCClientService {
     private receivedBuffer: Buffer = Buffer.alloc(0);
     private phase: HandshakePhase = 'idle';
     private handshakeComplete = false;
+    private handshakeSettled = false;
     private correlationId: string;
     private sessionTicket: string | null = null;
 
@@ -57,13 +62,18 @@ export class PQCClientService {
     private heartbeat: HeartbeatManager;
     private logger: StructuredLogger;
     private sessionCache = new ClientSessionCache();
+    private messageQueue = new MessageQueue();
+    private applicationResponseHandler: ((body: Buffer, serviceId: string) => void) | null = null;
 
     constructor(
         private host: string = '127.0.0.1',
         private port: number = 8443,
-        private qsCa?: QuantumSafeCA,
+        private qsCa: QuantumSafeCA,
         private config: NomadConfig = loadConfig()
     ) {
+        if (!qsCa) {
+            throw new Error('QS-CA is required — refuse to connect without trusted root.');
+        }
         configureFraming(this.config);
         this.crypto = new CryptoService(this.config.algorithmSuite);
         this.clientKem = this.crypto.createKem();
@@ -88,12 +98,21 @@ export class PQCClientService {
         this.logger.info('Client initialized', { component: 'client', correlationId: this.correlationId });
     }
 
+    getClientSigPublicKey(): Uint8Array {
+        return this.clientSigPublicKey;
+    }
+
+    setApplicationResponseHandler(handler: (body: Buffer, serviceId: string) => void): void {
+        this.applicationResponseHandler = handler;
+    }
+
     setSessionTicket(ticket: string): void {
         this.sessionTicket = ticket;
         const cached = this.sessionCache.load(ticket, this.config.sessionTtlMs);
         if (cached) {
             this.aesKey = cached.aesKey;
             this.correlationId = cached.correlationId;
+            this.pinnedServerSigPublicKey = cached.serverSigPublicKey;
         }
     }
 
@@ -104,13 +123,25 @@ export class PQCClientService {
         });
     }
 
+    private settleHandshakeSuccess(): void {
+        if (this.handshakeSettled) return;
+        this.handshakeSettled = true;
+        this.resolveHandshake?.();
+    }
+
+    private settleHandshakeFailure(reason: unknown): void {
+        if (this.handshakeSettled) return;
+        this.handshakeSettled = true;
+        this.rejectHandshake?.(reason);
+    }
+
     private failHandshake(reason: string, code = 'HANDSHAKE_FAILED'): void {
         this.logger.error(reason, { component: 'client', correlationId: this.correlationId, code });
         this.clearHandshakeTimer();
         this.heartbeat.stop();
         this.socket?.end();
         if (!this.handshakeComplete) {
-            this.rejectHandshake?.(new Error(reason));
+            this.settleHandshakeFailure(new Error(reason));
         }
     }
 
@@ -146,10 +177,7 @@ export class PQCClientService {
             try {
                 this.receivedBuffer = Buffer.concat([this.receivedBuffer, data]);
                 this.receivedBuffer = parseMessages(this.receivedBuffer, (message) => {
-                    this.processMessage(message).catch((err) => {
-                        const msg = err instanceof Error ? err.message : String(err);
-                        this.failHandshake(`Message processing failed: ${msg}`);
-                    });
+                    this.messageQueue.enqueue(() => this.processMessage(message));
                 });
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -162,7 +190,7 @@ export class PQCClientService {
             this.clearHandshakeTimer();
             this.heartbeat.stop();
             if (!this.handshakeComplete) {
-                this.rejectHandshake?.(new Error('Connection closed before handshake complete.'));
+                this.settleHandshakeFailure(new Error('Connection closed before handshake complete.'));
             }
             this.wipeSecrets();
         });
@@ -171,7 +199,7 @@ export class PQCClientService {
             this.logger.error('Socket error', { component: 'client', correlationId: this.correlationId, error: err.message });
             this.clearHandshakeTimer();
             if (!this.handshakeComplete) {
-                this.rejectHandshake?.(err);
+                this.settleHandshakeFailure(err);
             }
         });
 
@@ -194,7 +222,22 @@ export class PQCClientService {
         const base: WireMessage = this.sessionTicket
             ? { type: 'session_resume', sessionTicket: this.sessionTicket }
             : { type: 'client_hello' };
+
         const clientHello = attachSecurityFields(base, this.correlationId);
+
+        if (this.sessionTicket) {
+            const resumeData = buildSessionResumeSignedPayload(
+                this.sessionTicket,
+                this.clientSigPublicKey,
+                this.correlationId,
+                clientHello.nonce!,
+                clientHello.timestamp!
+            );
+            const resumeSig = this.crypto.sign(this.clientSig, this.clientSigPrivateKey, resumeData);
+            clientHello.signature = encodeBinary(resumeSig);
+            clientHello.clientPublicKeySig = encodeBinary(this.clientSigPublicKey);
+        }
+
         this.socket?.write(frameMessage(serializeMessage(clientHello)));
         this.phase = 'client_hello_sent';
     }
@@ -254,18 +297,9 @@ export class PQCClientService {
         this.serverSigPublicKey = decodeBinary(parsed.sigPublicKey, 'sigPublicKey');
 
         const cert = parsed.certificate as PQCertificate;
-        if (this.qsCa && !this.qsCa.verifyCertificate(cert)) {
-            this.failHandshake('QS-CA certificate verification failed', 'CERT_INVALID');
+        if (!verifyServerHelloIdentity(cert, this.serverKemPublicKey, this.serverSigPublicKey, this.qsCa)) {
+            this.failHandshake('QS-CA certificate or hello identity verification failed', 'CERT_INVALID');
             return;
-        } else if (!this.qsCa) {
-            const serverCertSig = typeof parsed.certificate === 'string'
-                ? decodeBinary(parsed.certificate, 'certificate')
-                : decodeBinary(cert.signature, 'certificate.signature');
-            const valid = this.crypto.verify(this.clientSig, this.serverSigPublicKey, this.serverSigPublicKey, serverCertSig);
-            if (!valid) {
-                this.failHandshake('Server certificate verification failed', 'CERT_INVALID');
-                return;
-            }
         }
 
         const { ciphertext, sharedSecret } = this.crypto.encapsulate(this.clientKem, this.serverKemPublicKey);
@@ -310,6 +344,14 @@ export class PQCClientService {
         const serverSigPublicKey = decodeBinary(parsed.sigPublicKey, 'sigPublicKey');
         const serverSignature = decodeBinary(parsed.signature, 'signature');
 
+        if (this.pinnedServerSigPublicKey &&
+            parsed.sigPublicKey !== this.pinnedServerSigPublicKey &&
+            this.serverSigPublicKey &&
+            Buffer.from(serverSigPublicKey).compare(Buffer.from(this.serverSigPublicKey)) !== 0) {
+            this.failHandshake('Server signature key mismatch on resume', 'SERVER_ID_MISMATCH');
+            return;
+        }
+
         if (this.serverSigPublicKey &&
             Buffer.from(serverSigPublicKey).compare(Buffer.from(this.serverSigPublicKey)) !== 0) {
             this.failHandshake('Server signature key mismatch');
@@ -328,14 +370,20 @@ export class PQCClientService {
             return;
         }
 
+        this.serverSigPublicKey = serverSigPublicKey;
+        this.pinnedServerSigPublicKey = encodeBinary(serverSigPublicKey);
+
         if (parsed.sessionTicket) {
             this.sessionTicket = parsed.sessionTicket;
-            if (this.aesKey) {
-                this.sessionCache.save(this.sessionTicket, this.aesKey, this.correlationId);
-            }
         }
 
-        this.phase = this.sessionTicket && this.phase === 'client_hello_sent' ? 'resumed' : 'established';
+        const isResume = this.phase === 'client_hello_sent' && !!this.sessionTicket;
+        if (!this.aesKey) {
+            this.failHandshake('Secure channel key missing after handshake — resume requires local session cache', 'RESUME_KEY_MISSING');
+            return;
+        }
+
+        this.phase = isResume ? 'resumed' : 'established';
         this.handshakeComplete = true;
         this.clearHandshakeTimer();
         this.heartbeat.start((buf) => this.socket?.write(buf), this.correlationId);
@@ -343,9 +391,20 @@ export class PQCClientService {
             component: 'client',
             correlationId: this.correlationId,
             durationMs: Date.now() - this.handshakeStartedAt,
+            resumed: isResume,
         });
         this.activateImperialLayers();
-        this.resolveHandshake?.();
+
+        if (this.sessionTicket && this.aesKey) {
+            this.sessionCache.save(
+                this.sessionTicket,
+                this.aesKey,
+                this.correlationId,
+                this.pinnedServerSigPublicKey
+            );
+        }
+
+        this.settleHandshakeSuccess();
     }
 
     private activateImperialLayers(): void {
@@ -358,27 +417,44 @@ export class PQCClientService {
     }
 
     private handleEncryptedData(parsed: WireMessage): void {
-        if (this.phase !== 'established' && this.phase !== 'resumed') return;
-        if (!this.aesKey || parsed.sequence === undefined) return;
+        if (this.phase !== 'established' && this.phase !== 'resumed') {
+            this.failHandshake('encrypted_data before secure channel', 'PHASE_VIOLATION');
+            return;
+        }
+        if (!this.aesKey || parsed.sequence === undefined) {
+            this.failHandshake('Incomplete encrypted_data', 'DECRYPT_FAILED');
+            return;
+        }
 
-        if (parsed.sequence <= this.recvSequence) {
-            this.failHandshake('Sequence replay detected', 'SEQUENCE_REPLAY');
+        if (parsed.sequence !== this.recvSequence + 1) {
+            this.failHandshake(
+                parsed.sequence <= this.recvSequence ? 'Sequence replay detected' : 'Sequence gap detected',
+                'SEQUENCE_ERROR'
+            );
             return;
         }
         this.recvSequence = parsed.sequence;
 
-        const record = this.recordLayer.open(this.aesKey, {
-            ciphertext: Buffer.from(parsed.data!, 'hex'),
-            iv: Buffer.from(parsed.iv!, 'hex'),
-            authTag: Buffer.from(parsed.authTag!, 'hex'),
-            sequence: parsed.sequence,
-        }, parsed.timestamp);
-        this.logger.info('Decrypted record', {
-            component: 'client',
-            correlationId: this.correlationId,
-            recordType: record.recordType,
-            serviceId: record.serviceId,
-        });
+        try {
+            const record = this.recordLayer.open(this.aesKey, {
+                ciphertext: Buffer.from(parsed.data!, 'hex'),
+                iv: Buffer.from(parsed.iv!, 'hex'),
+                authTag: Buffer.from(parsed.authTag!, 'hex'),
+                sequence: parsed.sequence,
+            }, parsed.timestamp);
+            this.logger.info('Decrypted record', {
+                component: 'client',
+                correlationId: this.correlationId,
+                recordType: record.recordType,
+                serviceId: record.serviceId,
+            });
+            if (record.recordType === 'application' && this.applicationResponseHandler) {
+                this.applicationResponseHandler(record.body, record.serviceId ?? 'default');
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.failHandshake(`Decryption failed: ${msg}`, 'DECRYPT_FAILED');
+        }
     }
 
     public async sendEncryptedMessage(message: string, serviceId = 'default'): Promise<void> {

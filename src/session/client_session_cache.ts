@@ -3,14 +3,15 @@
 export interface CachedSession {
     aesKey: Buffer;
     correlationId: string;
+    serverSigPublicKey: string;
     savedAt: number;
 }
 
 export class ClientSessionCache {
     private sessions = new Map<string, CachedSession>();
 
-    save(ticket: string, aesKey: Buffer, correlationId: string): void {
-        this.sessions.set(ticket, { aesKey, correlationId, savedAt: Date.now() });
+    save(ticket: string, aesKey: Buffer, correlationId: string, serverSigPublicKey: string): void {
+        this.sessions.set(ticket, { aesKey, correlationId, serverSigPublicKey, savedAt: Date.now() });
     }
 
     load(ticket: string, ttlMs: number): CachedSession | null {
